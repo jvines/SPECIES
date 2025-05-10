@@ -549,13 +549,13 @@ else:
         DATA.remove_columns(NOT_INCLUDED)
 
     if SAVE_AS_ASCII:
-        ascii.write(DATA, './output/%s_full.dat' % FILE_OUTPUT, \
+        ascii.write(DATA, '/data/species_output/%s_full.dat' % FILE_OUTPUT, \
                     format='fixed_width', delimiter=None, overwrite=True)
-        ascii.write(DATA_SUMMARY, './output/%s.dat' % FILE_OUTPUT,\
+        ascii.write(DATA_SUMMARY, '/data/species_output/%s.dat' % FILE_OUTPUT,\
                     format='fixed_width', delimiter=None, overwrite=True)
 
     if SAVE_AS_FITS:
-        DATA.write('./output/%s.fits' % FILE_OUTPUT, format='fits', overwrite=True)
+        DATA.write('/data/species_output/%s.fits' % FILE_OUTPUT, format='fits', overwrite=True)
 
 
 TIME_SECONDS = (time.time() - START)
