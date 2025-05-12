@@ -11,7 +11,7 @@ from astropy.stats import sigma_clip
 from scipy import stats
 
 def compute_average_abundance(starname, w=False, alias='test'):
-    filemoog = open('./output/%s_out.test' % alias, 'r')
+    filemoog = open('/data/output/%s_out.test' % alias, 'r')
     flag, nfailed = 0, 0
     ep = dif = rw = final_Fe = -99
 
