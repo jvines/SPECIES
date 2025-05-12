@@ -531,7 +531,7 @@ def compute_average_abundance(starname, w=False, alias='test', mode='linearregre
     rwline = re.compile(r'R.W. correlation')
     abline = re.compile(r'average abundance')
 
-    with open('/data/output/%s_out.test' % alias, 'r') as filemoog:
+    with open('/data/species_output/%s_out.test' % alias, 'r') as filemoog:
         for line in filemoog:
             line = line.strip()
             if failed1.search(line) or failed2.search(line):
@@ -1170,7 +1170,7 @@ def runMOOG_ab(starname, T, g, m, vt, use_w=False, alias='test', nions=14,\
     del lines, wave, ab, dev
 
     flagab = 0
-    with open('/data/output/%s_out.test' % alias) as output:
+    with open('/data/species_output/%s_out.test' % alias) as output:
         for linea in output:
             linea = linea.strip()
             for p in range(len(nameions)):
