@@ -686,11 +686,11 @@ def run_iteration(starlist,\
     os.system(cmd)
     cmd = 'rm -f ./atm_models/%s.atm' % (alias)
     os.system(cmd)
-    if os.path.isfile('/data/output/%s_out.test' % alias):
-        os.system('cp /data/output/%s_out.test '\
-                  '/data/output/MOOG_output_files/%s_out.test' % (alias, star))
+    if os.path.isfile('/data/species_output/%s_out.test' % alias):
+        os.system('cp /data/species_output/%s_out.test '\
+                  '/data/species_output/MOOG_output_files/%s_out.test' % (alias, star))
         plot_output_file(star)
-    cmd = 'rm -f /data/output/%s_out.test /data/output/%s.test' % (alias, alias)
+    cmd = 'rm -f /data/species_output/%s_out.test /data/species_output/%s.test' % (alias, alias)
     os.system(cmd)
     cmd = 'rm -f ./MOOG_linelist/lines.%s.txt' % (alias)
     os.system(cmd)
@@ -700,9 +700,9 @@ def run_iteration(starlist,\
         os.system(cmd)
         cmd = 'rm -f ./atm_models/%s_ab.atm' % (alias)
         os.system(cmd)
-        os.system('cp /data/output/%s_ab_out.test '\
-                  '/data/output/MOOG_output_files/%s_ab_out.test' % (alias, star))
-        cmd = 'rm -f /data/output/%s_ab_out.test /data/output/%s_ab.test' % (alias, alias)
+        os.system('cp /data/species_output/%s_ab_out.test '\
+                  '/data/species_output/MOOG_output_files/%s_ab_out.test' % (alias, star))
+        cmd = 'rm -f /data/species_output/%s_ab_out.test /data/species_output/%s_ab.test' % (alias, alias)
         os.system(cmd)
         cmd = 'rm -f ./MOOG_linelist/lines.%s_ab.txt' % (alias)
         os.system(cmd)
@@ -824,8 +824,8 @@ def calc_atm_params(star, hold, init_vals, err_init_vals, debug, log_f, set_boun
         par_out.write("plot        1\n")
         par_out.write("damping     2\n")
         par_out.write("units       0\n")
-        par_out.write("standard_out  '/data/output/%s.test'\n" % alias)
-        par_out.write("summary_out   '/data/output/%s_out.test'\n" % alias)
+        par_out.write("standard_out  '/data/species_output/%s.test'\n" % alias)
+        par_out.write("summary_out   '/data/species_output/%s_out.test'\n" % alias)
         par_out.write("model_in      './atm_models/%s.atm'\n" % alias)
         par_out.write("lines_in      './MOOG_linelist/lines.%s.txt'\n" % alias)
 
@@ -1062,8 +1062,8 @@ def calc_ab(star, T, logg, xmetal, micro, alias='test', nions=14,\
     par_out.write("plot        1\n")
     par_out.write("damping     2\n")
     par_out.write("units       0\n")
-    par_out.write("standard_out  '/data/output/%s_ab.test'\n" % (alias))
-    par_out.write("summary_out   '/data/output/%s_ab_out.test'\n" % (alias))
+    par_out.write("standard_out  '/data/species_output/%s_ab.test'\n" % (alias))
+    par_out.write("summary_out   '/data/species_output/%s_ab_out.test'\n" % (alias))
     par_out.write("model_in      './atm_models/%s_ab.atm'\n" % (alias))
     par_out.write("lines_in      './MOOG_linelist/lines.%s_ab.txt'\n" % (alias))
     par_out.close()
