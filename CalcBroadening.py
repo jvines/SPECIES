@@ -582,10 +582,10 @@ class Driver:
         self.plot_switch = plot
         self.savefig = savefig
         # Output files
-        self.standard_out = '/data/output/%s_l.out' % self.name
-        self.summary_out = '/data/output/%s_li.out' % self.name
-        self.smoothed_out = '/data/output/%s_s.out' % self.name
-        self.smoothed_out_new = '/data/output/%s_sn.out' % self.name
+        self.standard_out = '/data/species_output/%s_l.out' % self.name
+        self.summary_out = '/data/species_output/%s_li.out' % self.name
+        self.smoothed_out = '/data/species_output/%s_s.out' % self.name
+        self.smoothed_out_new = '/data/species_output/%s_sn.out' % self.name
 
         # Input files
         self.model_in = './atm_models/%s_v.atm' % self.name
@@ -593,10 +593,10 @@ class Driver:
         self.observed_in = './Spectra/%s_%d.dat' % (self.name, line_number)
 
         # Output files
-        self.standard_out_moog = '/data/output/%s_l.out' % self.name
-        self.summary_out_moog = '/data/output/%s_li.out' % self.name
-        self.smoothed_out_moog = '/data/output/%s_s.out' % self.name
-        self.smoothed_out_new_moog = '/data/output/%s_sn.out' % self.name
+        self.standard_out_moog = '/data/species_output/%s_l.out' % self.name
+        self.summary_out_moog = '/data/species_output/%s_li.out' % self.name
+        self.smoothed_out_moog = '/data/species_output/%s_s.out' % self.name
+        self.smoothed_out_new_moog = '/data/species_output/%s_sn.out' % self.name
 
         # Input files
         self.model_in_moog = './atm_models/%s_v.atm' % self.name
@@ -1385,16 +1385,16 @@ def calc_vsini(starname, Teff, met, logg, micro, v_macro, ab_ni,
     del new_data, data_lines, lines1, lines2, lines3, lines4, lines5, lines, f
 
     os.system('rm -f ./atm_models/%s_v.atm' % alias)
-    os.system('rm -f /data/output/%s_l.out' % alias)
-    os.system('rm -f /data/output/%s_li.out' % alias)
-    os.system('rm -f /data/output/%s_s.out' % alias)
-    os.system('rm -f /data/output/%s_sn.out' % alias)
+    os.system('rm -f /data/species_output/%s_l.out' % alias)
+    os.system('rm -f /data/species_output/%s_li.out' % alias)
+    os.system('rm -f /data/species_output/%s_s.out' % alias)
+    os.system('rm -f /data/species_output/%s_sn.out' % alias)
     os.system('rm -f ./MOOG_linelist/lines.%s_v.txt' % alias)
     os.system('rm -f ./MOOGFEB2017/abfind_%s_v_2.par' % alias)
     os.system('rm -f ./MOOGFEB2017/abfind_%s_v.par' % alias)
     os.system('rm -f ./MOOGFEB2017/%s_synth.par' % alias)
-    os.system('rm -f /data/output/%s.dat' % alias)
-    os.system('rm -f /data/output/%s_o.dat' % alias)
+    os.system('rm -f /data/species_output/%s.dat' % alias)
+    os.system('rm -f /data/species_output/%s_o.dat' % alias)
     
     # Correct for the solar values, so that vsini_sun = 1.9 km/s
     #vsini_lines = vsini_lines - 1.28
@@ -1421,10 +1421,10 @@ def calc_ab(starname, err_met, err_ni, alias='test'):
                 columnas = linea.strip()
                 m = re.search(r'standard_out\s*(\S*).*', columnas)
                 if m:
-                    linea = "standard_out  '/data/output/%s.dat'\n" % (alias)
+                    linea = "standard_out  '/data/species_output/%s.dat'\n" % (alias)
                 m = re.search(r'summary_out\s*(\S*).*', columnas)
                 if m:
-                    linea = "summary_out   '/data/output/%s_o.dat'\n" % (alias)
+                    linea = "summary_out   '/data/species_output/%s_o.dat'\n" % (alias)
                 m = re.search(r'model_in\s*(\S*).*', columnas)
                 if m:
                     linea = "model_in      './atm_models/%s_v.atm'\n" % (alias)
@@ -1440,7 +1440,7 @@ def calc_ab(starname, err_met, err_ni, alias='test'):
 
     ab = {}
     dev = {}
-    with open('/data/output/%s_o.dat' % alias) as output:
+    with open('/data/species_output/%s_o.dat' % alias) as output:
         for linea in output:
             linea = linea.strip()
             m = re.search(r'[a-z]', linea)
