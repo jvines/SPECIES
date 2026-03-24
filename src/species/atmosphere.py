@@ -111,6 +111,7 @@ class _ConvergenceState:
         self.change = "metallicity"
         self.change_prev = "metallicity"
         self.history: list[list[float]] = []
+        self._last_result: AbfindResult | None = None  # Track latest MOOG result
 
     @property
     def values(self) -> tuple[float, float, float, float]:
@@ -192,6 +193,33 @@ class _ConvergenceState:
             self.advance_parameter()
             self.n_it += 1
 
+    def check_nfailed_on_change(self, change: str) -> None:
+        """Increment break counter if the last MOOG call failed."""
+        if self.n_failed > 0:
+            self.advance_parameter()
+            self.n_break += 1
+
+    def check_nbreak(self) -> bool:
+        """Return True if we've exceeded the failure limit."""
+        if self.n_break > 5:
+            self.exception = 2
+            return True
+        return False
+
+    def check_nrepeat(self) -> bool:
+        """Return True if parameters have been repeated too many times."""
+        if self.n_it >= self.n_repeat:
+            self.exception = 2
+            return True
+        return False
+
+    def check_nit_total(self) -> bool:
+        """Return True if total iterations exceeded."""
+        if self.n_it_total >= 500_000:
+            self.exception = 2
+            return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Main fitter
@@ -268,57 +296,36 @@ class AtmosphereFitter:
     ) -> AtmosphericParameters:
         """Iterative per-parameter convergence loop.
 
-        Uses MOOGSession to reuse the working directory across iterations,
-        avoiding per-call temp dir overhead.
+        Faithful port of the original Atmos.py calc_params() + Metallicity(),
+        Temperature(), Pressure(), Velocity() functions. Each parameter runs
+        its OWN inner convergence loop, then hands off to the next.
+
+        Uses MOOGSession to reuse the working directory across all iterations.
         """
         state = _ConvergenceState(
             initial, hold, self.config.tolerance, boundaries,
         )
 
         with self.moog.open_session(linelist_path) as session:
+            # Initial MOOG run
+            result = self._session_run_moog(state, session)
+            if result is None:
+                return self._failed_result(state)
+
+            ab = result.fe_i_abundance - self.config.fe_solar
+            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+            state.params["metallicity"].ranges[2] = ab
+
+            # Metallicity range index (tracks which slot in the 3-element ranges array to write)
+            met_idx = 0
+
+            # Outer loop: cycle through parameters
             while True:
                 state.new_iteration()
-                state.check_repeat()
 
-                if state.is_failed():
-                    break
-
-                # Interpolate atmosphere model into session's reusable path
-                feh, teff, logg, vt = state.values
-                ok = self.grid.interpolate_and_write(
-                    teff, logg, feh, vt, session.model_path,
-                    fe_solar=self.config.fe_solar,
-                )
-                if not ok:
-                    logger.debug("Grid interpolation failed for T=%.0f logg=%.2f feh=%.2f", teff, logg, feh)
-                    state.n_break += 1
-                    state.perturb_on_failure()
-                    continue
-
-                # Run MOOG via session (no temp dir creation)
-                try:
-                    result = session.run_abfind(read_mode=self.config.read_mode)
-                except MOOGError:
-                    state.n_break += 1
-                    state.perturb_on_failure()
-                    continue
-
-                ab = result.fe_i_abundance - self.config.fe_solar
-                state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
-
-                logger.debug(
-                    "Iter %d [%s]: feh=%.2f T=%.0f logg=%.2f vt=%.2f → ab=%.3f ep=%.3f dif=%.3f rw=%.3f",
-                    state.n_it_total, state.change, feh, teff, logg, vt,
-                    ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope,
-                )
-
-                if state.n_failed > 0:
-                    state.perturb_on_failure()
-                    state.n_break += 1
-                    state.advance_parameter()
-                    continue
-
+                # Check overall convergence
                 if state.is_converged():
+                    feh, teff, logg, vt = state.values
                     logger.info(
                         "Converged after %d iterations: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f",
                         state.n_it_total, teff, logg, feh, vt,
@@ -331,49 +338,261 @@ class AtmosphereFitter:
                         converged=True, method="per_parameter",
                     )
 
-                # Adjust the current parameter
-                self._adjust_parameter(state)
+                if state.is_failed():
+                    break
 
-        # Failed to converge
+                change = state.change
+
+                if change == "metallicity":
+                    met_idx = self._converge_metallicity(state, session)
+                    state.check_nfailed_on_change(change)
+                elif change == "temperature":
+                    met_idx = self._converge_temperature(state, session, met_idx)
+                    state.check_nfailed_on_change(change)
+                elif change == "pressure":
+                    met_idx = self._converge_pressure(state, session, met_idx)
+                    state.check_nfailed_on_change(change)
+                else:  # velocity
+                    met_idx = self._converge_velocity(state, session, met_idx)
+                    state.check_nfailed_on_change(change)
+
+                state.perturb_on_failure()
+                if state.check_nbreak():
+                    break
+                state.check_repeat()
+                if state.check_nrepeat():
+                    break
+                if state.check_nit_total():
+                    break
+
+                # Keep result from latest MOOG call
+                result = state._last_result or result
+
+        return self._failed_result(state)
+
+    # ------------------------------------------------------------------
+    # Per-parameter inner convergence loops (ported from Atmos.py)
+    # ------------------------------------------------------------------
+
+    def _converge_metallicity(self, state: _ConvergenceState, session) -> int:
+        """Run metallicity to convergence: adjust [Fe/H] until derived == input.
+
+        Ported from Atmos.py Metallicity().
+        """
+        c = 0
+        for _ in range(100_000):
+            state.n_it_total += 1
+            feh_param = state.params["metallicity"]
+            ab = state.moog[0]
+
+            if abs(ab - feh_param.value) <= state.tol.ab:
+                state.advance_parameter()
+                break
+
+            if c > 50:
+                state.advance_parameter()
+                break
+
+            # Set [Fe/H] = derived abundance
+            feh_antes = feh_param.value
+            feh_param.value = float(np.clip(ab, feh_param.bounds[0], feh_param.bounds[1]))
+
+            result = self._session_run_moog(state, session)
+            if result is None or state.n_failed > 0:
+                state.advance_parameter()
+                feh_param.value = feh_antes
+                break
+
+            ab = result.fe_i_abundance - self.config.fe_solar
+            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+            state._last_result = result
+            c += 1
+
+        # After metallicity converges, reset ranges for other params
+        state.params["metallicity"].ranges = [-999.0, -999.0, state.moog[0]]
+        state.params["temperature"].ranges = [-999.0, -999.0]
+        state.params["gravity"].ranges = [-999.0, -999.0]
+        state.params["velocity"].ranges = [-999.0, -999.0]
+        return 0
+
+    def _converge_temperature(self, state: _ConvergenceState, session, met_idx: int) -> int:
+        """Run temperature to convergence: adjust Teff until EP slope ~ 0.
+
+        Ported from Atmos.py Temperature().
+        """
+        for _ in range(100_000):
+            state.n_it_total += 1
+            ep = state.moog[1]
+
+            if abs(ep) <= state.tol.ep:
+                ab = state.moog[0]
+                if ab == state.params["metallicity"].value:
+                    state.advance_parameter()
+                else:
+                    state.change = "velocity"
+                break
+
+            t_param = state.params["temperature"]
+            t_antes = t_param.value
+            _bisect_parameter(t_param, ep, step=250.0, decimals=0)
+
+            if t_param.value < t_param.bounds[0] or t_param.value > t_param.bounds[1]:
+                state.advance_parameter()
+                t_param.value = t_antes
+                break
+
+            result = self._session_run_moog(state, session)
+            if result is None or state.n_failed > 0:
+                state.advance_parameter()
+                break
+
+            ab = result.fe_i_abundance - self.config.fe_solar
+            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+            state._last_result = result
+
+            # Track metallicity convergence
+            state.params["metallicity"].ranges[met_idx] = ab
+            met_idx = (met_idx + 1) % 3
+
+            # Check if metallicity has cycled (same value 3 times)
+            if self._check_met_cycle(state):
+                state.change = "velocity"
+                break
+
+        return met_idx
+
+    def _converge_pressure(self, state: _ConvergenceState, session, met_idx: int) -> int:
+        """Run logg to convergence: adjust logg until Fe I-II difference ~ 0.
+
+        Ported from Atmos.py Pressure().
+        """
+        for _ in range(100_000):
+            state.n_it_total += 1
+            dif = state.moog[2]
+
+            if abs(dif) <= state.tol.dif:
+                ab = state.moog[0]
+                if ab == state.params["metallicity"].value:
+                    state.advance_parameter()
+                else:
+                    state.change = "velocity"
+                break
+
+            g_param = state.params["gravity"]
+            g_antes = g_param.value
+            _bisect_parameter(g_param, dif, step=0.25, decimals=5)
+
+            if g_param.value < g_param.bounds[0] or g_param.value > g_param.bounds[1]:
+                state.advance_parameter()
+                g_param.value = g_antes
+                break
+
+            result = self._session_run_moog(state, session)
+            if result is None or state.n_failed > 0:
+                state.advance_parameter()
+                break
+
+            ab = result.fe_i_abundance - self.config.fe_solar
+            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+            state._last_result = result
+
+            state.params["metallicity"].ranges[met_idx] = ab
+            met_idx = (met_idx + 1) % 3
+
+            if self._check_met_cycle(state):
+                state.change = "velocity"
+                break
+
+        return met_idx
+
+    def _converge_velocity(self, state: _ConvergenceState, session, met_idx: int) -> int:
+        """Run vt to convergence: adjust vt until RW slope ~ 0.
+
+        Ported from Atmos.py Velocity(). Hard limit of 50 iterations.
+        """
+        for v in range(50):
+            state.n_it_total += 1
+            rw = state.moog[3]
+
+            if abs(rw) <= state.tol.rw:
+                ab = state.moog[0]
+                if ab == state.params["metallicity"].value:
+                    state.change = "metallicity"
+                else:
+                    state.change = "velocity"
+                break
+
+            vt_param = state.params["velocity"]
+            vt_antes = vt_param.value
+            _bisect_parameter(vt_param, rw, step=0.25, decimals=5)
+
+            if vt_param.value < vt_param.bounds[0] or vt_param.value > vt_param.bounds[1]:
+                state.advance_parameter()
+                vt_param.value = vt_antes
+                break
+
+            result = self._session_run_moog(state, session)
+            if result is None or state.n_failed > 0:
+                state.advance_parameter()
+                break
+
+            ab = result.fe_i_abundance - self.config.fe_solar
+            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+            state._last_result = result
+
+            state.params["metallicity"].ranges[met_idx] = ab
+            met_idx = (met_idx + 1) % 3
+
+            if self._check_met_cycle(state):
+                state.change = "velocity"
+                break
+        else:
+            # Hit 50-iteration limit
+            state.advance_parameter()
+
+        return met_idx
+
+    # ------------------------------------------------------------------
+    # Shared helpers for the convergence loops
+    # ------------------------------------------------------------------
+
+    def _session_run_moog(self, state: _ConvergenceState, session) -> AbfindResult | None:
+        """Run MOOG via session, handling grid interpolation."""
+        feh, teff, logg, vt = state.values
+        ok = self.grid.interpolate_and_write(
+            teff, logg, feh, vt, session.model_path,
+            fe_solar=self.config.fe_solar,
+        )
+        if not ok:
+            state.n_break += 1
+            return None
+        try:
+            result = session.run_abfind(read_mode=self.config.read_mode)
+            logger.debug(
+                "MOOG [%s]: feh=%.2f T=%.0f logg=%.2f vt=%.2f → ab=%.3f ep=%.3f dif=%.3f rw=%.3f",
+                state.change, feh, teff, logg, vt,
+                result.fe_i_abundance - self.config.fe_solar,
+                result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope,
+            )
+            return result
+        except MOOGError:
+            state.n_break += 1
+            return None
+
+    @staticmethod
+    def _check_met_cycle(state: _ConvergenceState) -> bool:
+        """Check if metallicity ranges have cycled (same value 3 times)."""
+        r = state.params["metallicity"].ranges
+        return (r[0] == r[1]) and (r[1] == r[2]) and (r[0] != state.params["metallicity"].value)
+
+    @staticmethod
+    def _failed_result(state: _ConvergenceState) -> AtmosphericParameters:
         feh, teff, logg, vt = state.values
         logger.warning("Failed to converge after %d iterations", state.n_it_total)
         return AtmosphericParameters(
             teff=teff, logg=logg, feh=feh, vt=vt,
             converged=False, method="per_parameter",
         )
-
-    def _adjust_parameter(self, state: _ConvergenceState) -> None:
-        """Adjust one parameter based on current MOOG output and advance."""
-        change = state.change
-        moog = state.moog  # [ab, ep, dif, rw]
-
-        if change == "metallicity":
-            p = state.params["metallicity"]
-            # Metallicity is adjusted to match the derived abundance
-            ab = moog[0]
-            if abs(ab - p.value) > p.tol:
-                p.ranges[2] = p.value
-                p.value = float(ab)  # Set [Fe/H] = derived Fe abundance
-                p.value = np.clip(p.value, p.bounds[0], p.bounds[1])
-            state.advance_parameter()
-
-        elif change == "temperature":
-            p = state.params["temperature"]
-            ep = moog[1]  # EP slope
-            _bisect_parameter(p, ep, step=250.0, decimals=0)
-            state.advance_parameter()
-
-        elif change == "pressure":
-            p = state.params["gravity"]
-            dif = moog[2]  # Fe I - Fe II difference
-            _bisect_parameter(p, dif, step=0.5, decimals=2)
-            state.advance_parameter()
-
-        elif change == "velocity":
-            p = state.params["velocity"]
-            rw = moog[3]  # RW slope
-            _bisect_parameter(p, rw, step=0.5, decimals=2)
-            state.advance_parameter()
 
     # ------------------------------------------------------------------
     # Nelder-Mead simplex method
