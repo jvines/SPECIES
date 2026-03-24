@@ -1,0 +1,157 @@
+"""Generate MOOG parameter (.par) files for abfind and synth modes.
+
+Ported from CalcParams.py and CalcBroadening.py Driver.create_batch().
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from textwrap import dedent
+
+
+def write_abfind_par(
+    output_path: Path,
+    *,
+    model_path: Path,
+    linelist_path: Path,
+    summary_out: Path,
+    standard_out: Path,
+    smoothed_out: Path | None = None,
+    atmosphere: int = 1,
+    molecules: int = 1,
+    trudamp: int = 1,
+    lines: int = 1,
+    flux_int: int = 0,
+    damping: int = 1,
+    freeform: int = 0,
+    plot: int = 0,
+) -> Path:
+    """Write a MOOG abfind parameter file.
+
+    Parameters
+    ----------
+    output_path
+        Where to write the ``.par`` file.
+    model_path
+        Path to the interpolated atmosphere model (``.atm``).
+    linelist_path
+        Path to the MOOG-format line list.
+    summary_out
+        Path for MOOG summary output (``*_out.test``).
+    standard_out
+        Path for MOOG standard output.
+    smoothed_out
+        Optional path for smoothed output.
+
+    Returns
+    -------
+    Path
+        The ``output_path`` for chaining.
+    """
+    smooth_line = f"smoothed_out  '{smoothed_out}'" if smoothed_out else ""
+
+    content = dedent(f"""\
+        abfind
+        terminal       'x11'
+        standard_out   '{standard_out}'
+        summary_out    '{summary_out}'
+        {smooth_line}
+        model_in       '{model_path}'
+        lines_in       '{linelist_path}'
+        atmosphere     {atmosphere}
+        molecules      {molecules}
+        trudamp        {trudamp}
+        lines          {lines}
+        flux/int       {flux_int}
+        damping        {damping}
+        freeform       {freeform}
+        plot           {plot}
+    """).strip() + "\n"
+
+    # Remove blank lines from optional fields
+    lines_out = [ln for ln in content.splitlines() if ln.strip()]
+    output_path.write_text("\n".join(lines_out) + "\n")
+    return output_path
+
+
+def write_synth_par(
+    output_path: Path,
+    *,
+    model_path: Path,
+    linelist_path: Path,
+    observed_path: Path | None = None,
+    summary_out: Path,
+    standard_out: Path,
+    smoothed_out: Path,
+    wave_start: float,
+    wave_end: float,
+    wave_step: float = 0.02,
+    opacity_range: float = 2.0,
+    atmosphere: int = 1,
+    molecules: int = 1,
+    trudamp: int = 1,
+    lines: int = 1,
+    flux_int: int = 0,
+    damping: int = 1,
+    freeform: int = 0,
+    plot: int = 0,
+    n_species: int = 1,
+    species_ids: list[float] | None = None,
+    abundances: list[float] | None = None,
+) -> Path:
+    """Write a MOOG synth parameter file.
+
+    Parameters
+    ----------
+    output_path
+        Where to write the ``.par`` file.
+    wave_start, wave_end
+        Synthesis wavelength range in Angstroms.
+    wave_step
+        Wavelength step size.
+    n_species
+        Number of species to vary abundances for.
+    species_ids
+        Atomic species IDs (e.g. ``[26.0]`` for Fe I).
+    abundances
+        Abundance offsets for each species.
+
+    Returns
+    -------
+    Path
+        The ``output_path`` for chaining.
+    """
+    observed_line = f"observed_in    '{observed_path}'" if observed_path else ""
+
+    content = dedent(f"""\
+        synth
+        terminal       'x11'
+        standard_out   '{standard_out}'
+        summary_out    '{summary_out}'
+        smoothed_out   '{smoothed_out}'
+        {observed_line}
+        model_in       '{model_path}'
+        lines_in       '{linelist_path}'
+        atmosphere     {atmosphere}
+        molecules      {molecules}
+        trudamp        {trudamp}
+        lines          {lines}
+        flux/int       {flux_int}
+        damping        {damping}
+        freeform       {freeform}
+        plot           {plot}
+        synlimits
+          {wave_start:.2f}  {wave_end:.2f}  {wave_step:.4f}  {opacity_range:.2f}
+    """).strip()
+
+    # Abundance block
+    if species_ids and abundances and len(species_ids) == len(abundances):
+        content += f"\nabundances     {n_species}  1"
+        for sid, ab in zip(species_ids, abundances):
+            content += f"\n  {sid:.1f}   {ab:.3f}"
+
+    content += "\n"
+
+    lines_out = [ln for ln in content.splitlines() if ln.strip()]
+    output_path.write_text("\n".join(lines_out) + "\n")
+    return output_path
