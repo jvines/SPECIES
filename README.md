@@ -1,39 +1,208 @@
-# SPECIES
+# SPECIES v4
 
-Spectroscopic Parameters and atmosphEric ChemIstriEs of Stars (SPECIES) is a code meant to compute stellar parameters and abundances by using high resolution echelle spectra. The whole calculation is done automatically, with the stellar spectrum being the only mandatory input. It handles data from several spectrographs (HARPS, FEROS, UVES, HIRES, PFS, CORALIE so far) and more than one star at the same time.
+**SPECtroscopic Inference of stEllar parameterS**
 
-Please cite Soto & Jenkins 2018, http://adsabs.harvard.edu/abs/2018A%26A...615A..76S if your use SPECIES for your work.
+A modern stellar spectroscopy pipeline for determining atmospheric parameters, chemical abundances, and broadening from high-resolution echelle spectra.
 
-Authors: Maritza Soto and James Jenkins.
+Originally created by Maritza Soto & James Jenkins ([Soto & Jenkins 2018](http://adsabs.harvard.edu/abs/2018A%26A...615A..76S)). Modernized and maintained by Jose Vines.
 
-(**SPECIES went through some major changes. If you installed SPECIES before September 2020, please update all the scripts and make sure you include the MOOGPATH in your bash file (see the wiki). It is not necessary to reinstall ARES nor MOOG**).
+## What it does
 
-# Computation of parameters
+Given a high-resolution stellar spectrum, SPECIES determines:
 
-The atmospheric parameters (temperature, metallicity, surface gravity and microturbulence velocity) are computed by measuring the equivalent widths of several iron lines, done using ARES (Sousa et al. 2008). These are then given to MOOG (Sneden 1973), which solves the radiative transfer equation assuming local thermodynamic equilibrium (LTE) conditions. The atmospheric parameters are then derived through an iterative process that stops when no correlation is found between the line abundances with the excitation potential and the equivalent width. The atmospheric models are obtained from interpolation through a grid of ATLAS9 models (Castelli & Kurucz 2004).
+- **Atmospheric parameters**: Teff, log g, [Fe/H], microturbulence
+- **Chemical abundances**: Na, Mg, Al, Si, Ca, Ti, Cr, Mn, Fe, Ni, Cu, Zn (14 ions)
+- **Broadening**: vsini (rotational velocity) and vmac (macroturbulence)
 
-Chemical abundances are obtained for 11 elements: Na, Mg, Al, Si, Ca, Ti, Cr, Mn, Ni, Cu and Zn. These elements are the default ones included in our `Spectra/lines_ab.dat` linelist file, but that file can be modified or another linelist file can be use (please refer to the [wiki --> Running SPECIES](https://github.com/msotov/SPECIES/wiki/Running-SPECIES)). Rotational and macroturbulence velocity are found by temperature relations, and line fitting, measuring the profiles of five absorption lines.
+It works by measuring equivalent widths of iron lines, then iteratively solving for the atmospheric parameters that produce excitation balance, ionization balance, and abundance consistency using MOOG (Sneden 1973) under the assumption of local thermodynamic equilibrium (LTE). Atmosphere models are interpolated from ATLAS9 grids (Castelli & Kurucz 2004).
 
-Finally, physical parameters like mass and age are computed by interpolating throught a grid of MIST evolutionary models, using the metallicity, temperature and surface gravity found previously, as well as their uncertainties, as constrains to the likelihood function. It uses a bayesian approach to obtain the final values, which are taken as the mean and standard deviation of the Gaussian profile adjusted to the resulting chains.
+## Installation
 
-More detail about the method and results from SPECIES can be found in Soto & Jenkins 2018 (http://adsabs.harvard.edu/abs/2018A%26A...615A..76S) and Soto et al. 2020.
+```bash
+pip install astro-species
+species install-moog
+species check
+```
 
-# Installation and use
+`install-moog` downloads and compiles MOOG from source. You need `gfortran` installed:
 
-SPECIES is written mostly in Python, with the exception of MOOG, written in fortran. Installation instructions for MOOG, as well as required packages, are found in the [WiKi](https://github.com/msotov/SPECIES/wiki/Installation) page. Please refer to the [Wiki](https://github.com/msotov/SPECIES/wiki) for usage instructions as well. 
+| Platform | Command |
+|----------|---------|
+| Ubuntu/Debian | `sudo apt install gfortran` |
+| Fedora/RHEL | `sudo dnf install gcc-gfortran` |
+| macOS | `brew install gcc` |
+| Conda | `conda install -c conda-forge gfortran` |
 
-Please contact me if you have any questions or issues when running SPECIES!
+You also need ATLAS9 atmosphere model grids (~3.3 GB). These are not bundled with the package. Set `SPECIES_ATLAS9_DIR` to point to your local copy, or they will be downloaded on first use (TBD).
 
-# Some of the plots created by SPECIES
+### Docker
 
-Fit to the iron lines for the equivalent width estimation
-![EW fit](https://github.com/msotov/images/blob/master/EW.png)
+For zero-setup usage:
 
-Correlation between the iron abundance and the line excitation potential and reduced equivalent width, for the estimation of the atmospheric parameters
-![moog output](https://github.com/msotov/images/blob/master/moog_output.png)
+```bash
+docker build -t species .
+docker run -v ./spectra:/data species analyze /data/my_star.fits
+```
 
-HR diagram of the Sun
-![isochrone](https://github.com/msotov/images/blob/master/HRdiagram.png)
+## Quick start
 
-Rotational velocity estimation
-![vsini](https://github.com/msotov/images/blob/master/vsini.png)
+### Python API
+
+```python
+from species import Spectrum, Analyzer
+
+# Load a spectrum (auto-detects instrument from FITS header)
+spectrum = Spectrum.from_fits("my_star_feros.fits")
+
+# Or from arrays (e.g. from your own reduction pipeline)
+spectrum = Spectrum.from_arrays(wavelength, flux, snr=120, instrument="FEROS")
+
+# Run the full analysis
+result = Analyzer(spectrum).run()
+
+# Results are structured Python objects
+print(result.params.teff)           # 5822.0
+print(result.params.logg)           # 4.52
+print(result.params.feh)            # -0.003
+print(result.abundances["SiI"])     # ElementAbundance(abundance=+0.068, n_lines=20)
+print(result.broadening.vsini)      # 2.1 km/s
+
+# Serialize
+result.to_fits("results.fits")
+result.to_dict()  # for databases, JSON, etc.
+```
+
+### Command line
+
+```bash
+# Full analysis
+species analyze my_star.fits --output ./results
+
+# Skip broadening (faster)
+species analyze my_star.fits --no-broadening
+
+# Giant star
+species analyze my_star.fits --giant
+
+# EW measurement only
+species ew-only my_star.fits
+
+# Check installation
+species check
+```
+
+### Configuration
+
+All settings can be overridden via environment variables or constructor arguments:
+
+```python
+from species import Analyzer, Spectrum, Settings
+
+config = Settings(
+    atlas9_dir="/path/to/grids",
+    moog_binary="/usr/local/bin/MOOGSILENT",
+    is_giant=True,
+)
+
+result = Analyzer(spectrum, config=config).run()
+```
+
+Environment variables use the `SPECIES_` prefix: `SPECIES_ATLAS9_DIR`, `SPECIES_MOOG_BINARY`, etc.
+
+## Supported instruments
+
+SPECIES reads spectra from:
+
+- **HARPS** (ESO 3.6m)
+- **FEROS** (ESO/MPG 2.2m)
+- **UVES** (ESO VLT)
+- **HIRES** (Keck)
+- **CORALIE** (Euler 1.2m)
+- **PFS** (Magellan)
+- **AAT**
+- **LCO NRES**
+- Generic FITS (auto-detected from WCS keywords or 2D data layout)
+
+Instrument is auto-detected from the FITS header `INSTRUME` keyword or the filename convention (`starname_instrument.fits`). You can also pass `instrument="FEROS"` explicitly.
+
+## Changes from the original SPECIES
+
+### Algorithmic improvements
+
+**Broyden's method replaces per-parameter bisection.** The original adjusted one parameter at a time (metallicity, then temperature, then gravity, then microturbulence) via bisection, cycling until all four diagnostics converged. This required 600-900 MOOG calls per star and had convergence issues when porting from Python 2 to 3 due to float comparison semantics. The new default uses Broyden's quasi-Newton method, which solves the 4-equation system simultaneously in 10-16 MOOG calls. The residual norm is typically 250x smaller. The old bisection method is still available via `method="per_parameter"`.
+
+**Broadening uses MOOG 5x instead of 75x.** The original ran a separate MOOG synthesis for each vsini grid point (15 values x 5 lines = 75 calls). But the unbroadened spectrum is identical regardless of vsini — rotational broadening is applied afterward. The new code synthesizes once per diagnostic line and applies `pyasl.rotBroad()` in numpy.
+
+**Error propagation unified.** The original had two nearly identical files (`CalcErrors_new.py` for dwarfs, `CalcErrorsGiant_new.py` for giants) differing only in polynomial coefficients. Now a single parameterized module.
+
+### Architecture
+
+| Aspect | Original (v3) | v4 |
+|--------|--------------|-----|
+| Python version | 2.7/3.x compatible | 3.12+ |
+| Packaging | None (clone and run) | `pip install astro-species` |
+| API | CLI only (`python SPECIES.py -starlist ...`) | Python library + CLI |
+| Configuration | 80+ global variables, 40+ CLI flags | Pydantic Settings + env vars |
+| MOOG interface | `os.system("MOOGSILENT")` | `subprocess.run()` with timeout, error handling |
+| Type hints | None | Full coverage |
+| Tests | None | 17 integration tests |
+| Output | Text files at hardcoded paths | Structured dataclasses, FITS, ASCII |
+| Parallelism | Per-star (`multiprocessing.Pool`) | Per-star + MOOGSession for per-call efficiency |
+| Lines of code | ~9,800 | ~5,800 |
+
+### What was removed
+
+- **Isochrone fitting** (`FindIsochrones.py`): Mass, age, and radius determination is now handled by downstream tools (Lachesis). SPECIES focuses on spectroscopy.
+- **Python 2 compatibility**: `from __future__` imports, `past.utils.old_div`, `builtins` shims.
+- **MultiNest/emcee dependencies**: These were only used by the isochrone module.
+- **`mwdust` dependency**: Extinction correction is handled elsewhere.
+- **Full `PhotometricRelations_class.py`**: Replaced with a lightweight Vizier lookup for initial parameter guesses. With Broyden's method, initial guesses matter less.
+
+### Performance
+
+| Metric | Original | v4 |
+|--------|----------|-----|
+| MOOG calls per star | 600-900 | 15-25 |
+| Wall-clock time | 10-20 min | ~1 min |
+| Convergence residual | ~0.05 | ~0.0002 |
+
+## Package structure
+
+```
+src/species/
+    __init__.py          # Public API: Spectrum, Analyzer, Settings
+    config.py            # Pydantic Settings (replaces global variables)
+    cli.py               # Command-line interface
+    analyzer.py          # Main orchestrator
+    spectrum.py          # Spectrum loading + instrument readers
+    ccf.py               # Cross-correlation for RV / rest-frame correction
+    ew.py                # Equivalent width measurement
+    atmosphere.py        # Atmospheric parameter fitting (Broyden + bisection)
+    errors.py            # Error propagation (unified dwarf/giant)
+    abundances.py        # Chemical abundance determination
+    broadening.py        # vsini / vmac measurement
+    photometry.py        # Vizier initial parameter estimation
+    moog/
+        wrapper.py       # MOOG subprocess interface + MOOGSession
+        parser.py        # MOOG output parsing
+        par_file.py      # Parameter file generation
+        atmosphere_grid.py  # ATLAS9 grid interpolation
+    io/
+        results.py       # Result dataclasses + serialization
+        plots.py         # Diagnostic plots
+    data/
+        linelists/       # Bundled iron + abundance line lists
+        masks/           # Binary masks for CCF
+        solar.py         # Asplund 2009 solar abundances
+```
+
+## Citation
+
+If you use SPECIES in your work, please cite:
+
+- Soto & Jenkins 2018, A&A 615, A76 ([ADS](http://adsabs.harvard.edu/abs/2018A%26A...615A..76S))
+- Soto et al. 2021, MNRAS 508, 1
+
+## License
+
+MIT
