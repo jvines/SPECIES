@@ -6,12 +6,16 @@ observed line profiles via grid search with spline interpolation.
 
 Algorithm:
 1. Compute vmac from empirical Teff/logg relations
-2. For each of 5 diagnostic lines (4 Fe I + 1 Ni I):
-   a. Generate synthetic spectra via MOOG synth at grid of vsini values
-   b. Apply rotational broadening via PyAstronomy
+2. Interpolate atmosphere model ONCE (same for all diagnostic lines)
+3. For each of 5 diagnostic lines (4 Fe I + 1 Ni I):
+   a. Generate ONE unbroadened synthetic spectrum via MOOG synth
+   b. Apply rotational broadening via PyAstronomy at each vsini grid point (pure numpy, no MOOG)
    c. Find chi-squared minimum via spline interpolation
-   d. Monte Carlo error estimation (N=1000 noise realizations)
-3. Combine per-line results via weighted median
+   d. Monte Carlo error estimation (N=500 noise realizations)
+4. Combine per-line results via weighted median
+
+Optimization: MOOG synth produces the SAME unbroadened spectrum regardless of vsini.
+Rotational broadening is applied post-hoc. This reduces MOOG calls from 75 to 5 per star.
 """
 
 from __future__ import annotations
@@ -108,7 +112,13 @@ class BroadeningFitter:
             getattr(params, '_err_logg', 0.1),
         )
 
-        # 2. For each diagnostic line, measure vsini via grid search
+        # 2. Interpolate atmosphere model ONCE (same for all lines)
+        model_path = self._make_shared_model(params)
+        if model_path is None:
+            logger.warning("Cannot interpolate atmosphere model for broadening")
+            return BroadeningResult()
+
+        # 3. For each diagnostic line, synthesize ONCE and fit vsini via grid search
         vsini_arr = np.zeros(len(_BROADENING_LINES))
         err_vsini_arr = np.zeros(len(_BROADENING_LINES))
 
@@ -133,6 +143,7 @@ class BroadeningFitter:
             try:
                 vs, err_vs = self._fit_single_line(
                     wave_window, flux_norm, wl, params, vmac, snr, line_info,
+                    model_path,
                 )
                 vsini_arr[i] = vs
                 err_vsini_arr[i] = err_vs
@@ -140,8 +151,21 @@ class BroadeningFitter:
             except Exception:
                 logger.debug("Line %.2f: vsini fit failed", wl, exc_info=True)
 
-        # 3. Combine results
+        # Cleanup shared model
+        if model_path.exists():
+            model_path.unlink(missing_ok=True)
+
+        # 4. Combine results
         return _combine_results(vsini_arr, err_vsini_arr, vmac_arr, err_vmac_arr)
+
+    def _make_shared_model(self, params: AtmosphericParameters) -> Path | None:
+        """Create a single atmosphere model file shared across all diagnostic lines."""
+        model_path = Path(tempfile.mktemp(prefix="species_broad_model_", suffix=".atm"))
+        ok = self.grid.interpolate_and_write(
+            params.teff, params.logg, params.feh, params.vt,
+            model_path, fe_solar=self.config.fe_solar,
+        )
+        return model_path if ok else None
 
     def _fit_single_line(
         self,
@@ -152,52 +176,59 @@ class BroadeningFitter:
         vmac: float,
         snr: float,
         line_info: dict,
+        model_path: Path,
     ) -> tuple[float, float]:
         """Fit vsini for a single diagnostic line via grid search.
 
+        Synthesizes the unbroadened spectrum ONCE via MOOG, then applies
+        rotational broadening at each vsini grid point in pure numpy.
+
         Returns (vsini, error).
         """
-        # Generate synthetic spectra at grid of vsini values
+        # 1. Synthesize unbroadened spectrum ONCE
+        synth_wave, synth_flux_raw = self._synthesize_unbroadened(
+            model_path, line_center, line_info,
+        )
+        if synth_wave is None:
+            return 0.0, 0.0
+
+        # 2. Apply macroturbulence ONCE (same for all vsini)
+        synth_flux_vmac = _apply_macroturbulence(synth_wave, synth_flux_raw, vmac, line_center)
+
+        # 3. Grid search: apply rotational broadening at each vsini (pure numpy)
         v_grid = np.linspace(0.5, 25.0, 15)
         chi2 = np.full(len(v_grid), np.inf)
 
-        # Find line center index in data
         center_idx = np.argmin(np.abs(wavelength - line_center))
         radius = min(10, center_idx, len(wavelength) - center_idx - 1)
         ci0 = center_idx - radius
         ci1 = center_idx + radius + 1
+        w = _make_weights(radius)
+        n_w = min(len(w), ci1 - ci0)
 
         for k, vsini in enumerate(v_grid):
             try:
-                synth_wave, synth_flux = self._synthesize_line(
-                    params, line_center, vsini, vmac, line_info,
-                )
-                if synth_wave is None:
-                    continue
+                # Apply rotational broadening (pure numpy via PyAstronomy, no MOOG)
+                if vsini > 0.5:
+                    broadened = pyasl.rotBroad(synth_wave, synth_flux_vmac, 0.0, vsini)
+                else:
+                    broadened = synth_flux_vmac
 
-                # Interpolate synthetic to observed wavelength grid
-                model_interp = np.interp(
-                    wavelength[ci0:ci1], synth_wave, synth_flux,
-                )
-
-                # Weighted chi-squared
-                w = _make_weights(radius)
-                n_w = min(len(w), ci1 - ci0)
+                model_interp = np.interp(wavelength[ci0:ci1], synth_wave, broadened)
                 chi2[k] = np.sum(
                     w[:n_w] * (flux_norm[ci0:ci1][:n_w] - model_interp[:n_w]) ** 2
                 ) / np.sum(w[:n_w])
-
             except Exception:
                 continue
 
-        # Find minimum via spline interpolation
+        # 4. Find minimum via spline interpolation
         valid = np.isfinite(chi2)
         if np.sum(valid) < 4:
             return 0.0, 0.0
 
         best_vsini = _find_spline_minimum(v_grid[valid], chi2[valid])
 
-        # Monte Carlo error estimation
+        # 5. Monte Carlo error estimation
         err_vsini = _monte_carlo_error(
             wavelength, flux_norm, snr, center_idx, radius,
             v_grid[valid], chi2[valid], n_trials=500,
@@ -205,64 +236,37 @@ class BroadeningFitter:
 
         return best_vsini, err_vsini
 
-    def _synthesize_line(
+    def _synthesize_unbroadened(
         self,
-        params: AtmosphericParameters,
+        model_path: Path,
         line_center: float,
-        vsini: float,
-        vmac: float,
         line_info: dict,
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        """Generate a rotationally broadened synthetic spectrum for one line."""
+        """Run MOOG synth ONCE to produce the unbroadened synthetic spectrum."""
         try:
-            with tempfile.TemporaryDirectory(prefix="species_synth_") as tmpdir:
-                model_path = Path(tmpdir) / "model.atm"
-                ok = self.grid.interpolate_and_write(
-                    params.teff, params.logg, params.feh, params.vt,
-                    model_path, fe_solar=self.config.fe_solar,
-                )
-                if not ok:
-                    return None, None
+            smoothed = self.moog.run_synth(
+                model_path,
+                self.config.linelist_vsini_path,
+                wave_start=line_center - 3.0,
+                wave_end=line_center + 3.0,
+                wave_step=0.02,
+                species_ids=[float(line_info["Z"])],
+                abundances=[0.0],  # solar abundance offset
+            )
 
-                # Run MOOG synth
-                smoothed = self.moog.run_synth(
-                    model_path,
-                    self.config.linelist_vsini_path,
-                    wave_start=line_center - 3.0,
-                    wave_end=line_center + 3.0,
-                    wave_step=0.02,
-                    species_ids=[float(line_info["Z"])],
-                    abundances=[params.feh],
-                )
+            synth_data = np.loadtxt(smoothed)
+            synth_wave = synth_data[:, 0]
+            synth_flux = synth_data[:, 1]
+            smoothed.unlink(missing_ok=True)
 
-                # Read synthetic spectrum
-                synth_data = np.loadtxt(smoothed)
-                synth_wave = synth_data[:, 0]
-                synth_flux = synth_data[:, 1]
-                smoothed.unlink(missing_ok=True)
+            # Normalize to continuum
+            if np.max(synth_flux) > 0:
+                synth_flux /= np.max(synth_flux)
 
-                # Normalize to max
-                if np.max(synth_flux) > 0:
-                    synth_flux /= np.max(synth_flux)
+            return synth_wave, synth_flux
 
-                # Apply rotational broadening
-                if vsini > 0.5:
-                    synth_flux = pyasl.rotBroad(synth_wave, synth_flux, 0.0, vsini)
-
-                # Apply macroturbulence (approximate as Gaussian)
-                if vmac > 0.1:
-                    # Convert vmac to wavelength sigma at line center
-                    c_kms = 299792.458
-                    sigma_wl = vmac / c_kms * line_center
-                    sigma_pix = sigma_wl / 0.02  # pixel scale
-                    if sigma_pix > 0.5:
-                        from astropy.convolution import Gaussian1DKernel, convolve
-                        kernel = Gaussian1DKernel(sigma_pix)
-                        synth_flux = convolve(synth_flux, kernel, boundary="extend")
-
-                return synth_wave, synth_flux
-
-        except (MOOGError, Exception):
+        except (MOOGError, Exception) as e:
+            logger.debug("MOOG synth failed for line %.2f: %s", line_center, e)
             return None, None
 
 
@@ -324,6 +328,26 @@ def _compute_vmac(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _apply_macroturbulence(
+    wavelength: np.ndarray,
+    flux: np.ndarray,
+    vmac: float,
+    line_center: float,
+) -> np.ndarray:
+    """Apply macroturbulence broadening (Gaussian convolution)."""
+    if vmac <= 0.1:
+        return flux
+    c_kms = 299792.458
+    sigma_wl = vmac / c_kms * line_center
+    pixel_scale = np.mean(np.diff(wavelength)) if len(wavelength) > 1 else 0.02
+    sigma_pix = sigma_wl / pixel_scale
+    if sigma_pix > 0.5:
+        from astropy.convolution import Gaussian1DKernel, convolve
+        kernel = Gaussian1DKernel(sigma_pix)
+        return convolve(flux, kernel, boundary="extend")
+    return flux
+
 
 def _normalize_continuum(
     wavelength: np.ndarray,

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.interpolate import griddata, LinearNDInterpolator
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +129,18 @@ class AtmosphereGrid:
         if not inside:
             return False
 
-        # 3D linear interpolation for each column
-        points = (t_sel, g_sel, m_sel)
-        xi = (teff, logg, feh)
+        # 3D linear interpolation for all 7 columns at once
+        # Use cached interpolator when the same grid neighborhood is reused
+        # (common during iterative convergence where parameters change slightly)
+        points = np.column_stack([t_sel, g_sel, m_sel])
+        xi = np.array([[teff, logg, feh]])
 
         columns: list[np.ndarray] = []
         for col_key in ("col0", "col1", "col2", "col3", "col4", "col5", "col6"):
-            col = griddata(points, g[col_key][mask], xi, method="linear", rescale=True)
+            interp = self._get_interpolator(
+                tuple(map(tuple, points)), col_key, g[col_key][mask], points,
+            )
+            col = interp(xi).ravel()
             if not np.all(np.isfinite(col)):
                 return False
             columns.append(col)
@@ -162,6 +167,37 @@ class AtmosphereGrid:
             f.write(_MOOG_MOLECULES)
 
         return True
+
+    # Manual cache for interpolators (keyed by grid neighborhood hash + column)
+    _interp_cache: ClassVar[dict[tuple, LinearNDInterpolator]] = {}
+    _interp_cache_maxsize: ClassVar[int] = 56  # 7 columns × 8 neighborhoods
+
+    def _get_interpolator(
+        self,
+        points_key: tuple,
+        col_key: str,
+        values: np.ndarray,
+        points: np.ndarray,
+    ) -> LinearNDInterpolator:
+        """Get or create a cached LinearNDInterpolator for a grid neighborhood.
+
+        The cache key is a hash of the grid vertices + column name. When
+        consecutive iterations select the same nearby grid points (common
+        during convergence), the triangulation is reused.
+        """
+        # Use hash of points_key for speed (tuple of tuples is hashable)
+        cache_key = (hash(points_key), col_key)
+        if cache_key in self._interp_cache:
+            return self._interp_cache[cache_key]
+
+        # Evict oldest if cache is full
+        if len(self._interp_cache) >= self._interp_cache_maxsize:
+            oldest = next(iter(self._interp_cache))
+            del self._interp_cache[oldest]
+
+        interp = LinearNDInterpolator(points, values, rescale=True)
+        self._interp_cache[cache_key] = interp
+        return interp
 
     # ------------------------------------------------------------------
     # Grid loading

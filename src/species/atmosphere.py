@@ -266,57 +266,73 @@ class AtmosphereFitter:
         hold: list[str],
         boundaries: dict[str, tuple[float, float]] | None,
     ) -> AtmosphericParameters:
-        """Iterative per-parameter convergence loop."""
+        """Iterative per-parameter convergence loop.
+
+        Uses MOOGSession to reuse the working directory across iterations,
+        avoiding per-call temp dir overhead.
+        """
         state = _ConvergenceState(
             initial, hold, self.config.tolerance, boundaries,
         )
 
-        while True:
-            state.new_iteration()
-            state.check_repeat()
+        with self.moog.open_session(linelist_path) as session:
+            while True:
+                state.new_iteration()
+                state.check_repeat()
 
-            if state.is_failed():
-                break
+                if state.is_failed():
+                    break
 
-            # Run MOOG
-            feh, teff, logg, vt = state.values
-            result = self._run_moog(teff, logg, feh, vt, linelist_path)
-
-            if result is None:
-                state.n_break += 1
-                state.perturb_on_failure()
-                continue
-
-            ab = result.fe_i_abundance - self.config.fe_solar
-            state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
-
-            logger.debug(
-                "Iter %d [%s]: feh=%.2f T=%.0f logg=%.2f vt=%.2f → ab=%.3f ep=%.3f dif=%.3f rw=%.3f",
-                state.n_it_total, state.change, feh, teff, logg, vt,
-                ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope,
-            )
-
-            if state.n_failed > 0:
-                state.perturb_on_failure()
-                state.n_break += 1
-                state.advance_parameter()
-                continue
-
-            if state.is_converged():
-                logger.info(
-                    "Converged after %d iterations: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f",
-                    state.n_it_total, teff, logg, feh, vt,
+                # Interpolate atmosphere model into session's reusable path
+                feh, teff, logg, vt = state.values
+                ok = self.grid.interpolate_and_write(
+                    teff, logg, feh, vt, session.model_path,
+                    fe_solar=self.config.fe_solar,
                 )
-                return AtmosphericParameters(
-                    teff=teff, logg=logg, feh=feh, vt=vt,
-                    n_fe_i=result.n_fe_i, n_fe_ii=result.n_fe_ii,
-                    fe_i_abundance=result.fe_i_abundance,
-                    fe_ii_abundance=result.fe_ii_abundance,
-                    converged=True, method="per_parameter",
+                if not ok:
+                    logger.debug("Grid interpolation failed for T=%.0f logg=%.2f feh=%.2f", teff, logg, feh)
+                    state.n_break += 1
+                    state.perturb_on_failure()
+                    continue
+
+                # Run MOOG via session (no temp dir creation)
+                try:
+                    result = session.run_abfind(read_mode=self.config.read_mode)
+                except MOOGError:
+                    state.n_break += 1
+                    state.perturb_on_failure()
+                    continue
+
+                ab = result.fe_i_abundance - self.config.fe_solar
+                state.record_moog_output(ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope, result.n_failed)
+
+                logger.debug(
+                    "Iter %d [%s]: feh=%.2f T=%.0f logg=%.2f vt=%.2f → ab=%.3f ep=%.3f dif=%.3f rw=%.3f",
+                    state.n_it_total, state.change, feh, teff, logg, vt,
+                    ab, result.ep_slope, result.fe_i_fe_ii_diff, result.rw_slope,
                 )
 
-            # Adjust the current parameter
-            self._adjust_parameter(state)
+                if state.n_failed > 0:
+                    state.perturb_on_failure()
+                    state.n_break += 1
+                    state.advance_parameter()
+                    continue
+
+                if state.is_converged():
+                    logger.info(
+                        "Converged after %d iterations: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f",
+                        state.n_it_total, teff, logg, feh, vt,
+                    )
+                    return AtmosphericParameters(
+                        teff=teff, logg=logg, feh=feh, vt=vt,
+                        n_fe_i=result.n_fe_i, n_fe_ii=result.n_fe_ii,
+                        fe_i_abundance=result.fe_i_abundance,
+                        fe_ii_abundance=result.fe_ii_abundance,
+                        converged=True, method="per_parameter",
+                    )
+
+                # Adjust the current parameter
+                self._adjust_parameter(state)
 
         # Failed to converge
         feh, teff, logg, vt = state.values
