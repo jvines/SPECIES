@@ -394,7 +394,9 @@ def create_moog_linelist(
             if not ew_res.is_valid:
                 continue
 
-            ew = ew_res.ew_median if ew_res.ew_median > 0 else ew_res.ew
+            # Original SPECIES uses the direct Gaussian fit EW (column 2),
+            # not the MC median (column 3), for MOOG input
+            ew = ew_res.ew
             ew_err = max(ew_res.ew_err_plus, ew_res.ew_err_minus)
 
             if not (ew_min <= ew <= ew_max):
