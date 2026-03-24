@@ -215,7 +215,17 @@ class Analyzer:
         broadening: BroadeningResult | None = None
         if self.config.compute_broadening and params.converged:
             logger.info("Measuring broadening (vsini, vmac)")
-            # TODO: Phase 7 — port CalcBroadening.py
+            from species.broadening import BroadeningFitter
+            bf = BroadeningFitter(self.config, self.moog, self.grid)
+            ni_ab = abundances.get("NiI")
+            broadening = bf.fit(
+                spec_1d.wavelength,
+                spec_1d.flux,
+                float(spec_1d.snr) if not hasattr(spec_1d.snr, "__len__") else float(np.median(spec_1d.snr)),
+                params,
+                ni_abundance=ni_ab.abundance if ni_ab else params.feh,
+                ni_uncertainty=ni_ab.uncertainty if ni_ab else 0.1,
+            )
 
         # Build metadata
         snr_val = spec.snr
