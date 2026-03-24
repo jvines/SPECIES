@@ -47,6 +47,21 @@ def main(argv: list[str] | None = None) -> int:
     p_ew.add_argument("--output", "-o", type=Path, default=Path("./output"))
     p_ew.add_argument("-v", "--verbose", action="store_true")
 
+    # --- install-moog ---
+    p_moog = sub.add_parser("install-moog", help="Download and compile MOOG")
+    p_moog.add_argument(
+        "--prefix", type=Path, default=None,
+        help="Install directory (default: ~/.species/moog)",
+    )
+    p_moog.add_argument(
+        "--commit", default="53d3f645f18c1acfb568c5ed7ea0c4e4551ef5e5",
+        help="moog17scat git commit to checkout",
+    )
+    p_moog.add_argument("-v", "--verbose", action="store_true")
+
+    # --- check ---
+    sub.add_parser("check", help="Check SPECIES installation and dependencies")
+
     args = parser.parse_args(argv)
 
     if args.version:
@@ -66,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_analyze(args)
     elif args.command == "ew-only":
         return _cmd_ew_only(args)
+    elif args.command == "install-moog":
+        return _cmd_install_moog(args)
+    elif args.command == "check":
+        return _cmd_check(args)
 
     return 0
 
@@ -151,6 +170,207 @@ def _cmd_ew_only(args: argparse.Namespace) -> int:
         print(f"  {r.wavelength:8.2f}  EW={r.ew_median:7.2f} +{r.ew_err_plus:.2f} -{r.ew_err_minus:.2f} mA")
 
     return 0
+
+
+def _cmd_install_moog(args: argparse.Namespace) -> int:
+    """Download and compile MOOG from moog17scat."""
+    import shutil
+    import subprocess
+
+    prefix = args.prefix or Path.home() / ".species" / "moog"
+    repo_url = "https://github.com/jvines/moog17scat.git"
+    commit = args.commit
+
+    # Check for gfortran
+    gfortran = shutil.which("gfortran")
+    if not gfortran:
+        print("Error: gfortran not found.")
+        print()
+        print("Install it with:")
+        print("  Ubuntu/Debian:  sudo apt install gfortran")
+        print("  Fedora/RHEL:    sudo dnf install gcc-gfortran")
+        print("  macOS:          brew install gcc")
+        print("  Conda:          conda install -c conda-forge gfortran")
+        return 1
+
+    make = shutil.which("make")
+    if not make:
+        print("Error: make not found. Install build-essential (Linux) or Xcode CLI tools (macOS).")
+        return 1
+
+    git = shutil.which("git")
+    if not git:
+        print("Error: git not found.")
+        return 1
+
+    print(f"Installing MOOG to {prefix}")
+    print(f"  gfortran: {gfortran}")
+    print()
+
+    # Clone
+    if prefix.exists():
+        print(f"Directory {prefix} already exists.")
+        moogsilent = prefix / "MOOGSILENT"
+        if moogsilent.exists():
+            print(f"MOOG binary found at {moogsilent}")
+            response = input("Reinstall? [y/N] ").strip().lower()
+            if response != "y":
+                _print_config_hint(prefix)
+                return 0
+        shutil.rmtree(prefix)
+
+    print("Cloning moog17scat...")
+    result = subprocess.run(
+        ["git", "clone", repo_url, str(prefix)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error cloning: {result.stderr}")
+        return 1
+
+    # Checkout pinned commit
+    subprocess.run(
+        ["git", "checkout", commit],
+        cwd=prefix, capture_output=True, text=True,
+    )
+
+    # Compile
+    print("Compiling MOOG...")
+    result = subprocess.run(
+        ["make"],
+        cwd=prefix,
+        capture_output=not args.verbose,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        print("Compilation failed.")
+        if not args.verbose:
+            print("Run with -v to see compiler output.")
+            if result.stderr:
+                print(result.stderr[-500:])
+        return 1
+
+    moogsilent = prefix / "MOOGSILENT"
+    if not moogsilent.exists():
+        print("Error: MOOGSILENT binary was not produced.")
+        print("Check the compiler output with: species install-moog -v")
+        return 1
+
+    # Verify it runs
+    print("Verifying MOOG binary...")
+    try:
+        proc = subprocess.run(
+            [str(moogsilent)],
+            input="\n\n",
+            capture_output=True, text=True,
+            timeout=5,
+        )
+        if "MOOG" in proc.stdout:
+            print("MOOG binary works.")
+        else:
+            print("Warning: MOOG binary ran but output was unexpected.")
+    except Exception as e:
+        print(f"Warning: could not verify MOOG binary: {e}")
+
+    print()
+    print(f"MOOG installed at {moogsilent}")
+    _print_config_hint(prefix)
+    return 0
+
+
+def _print_config_hint(prefix: Path) -> None:
+    """Print instructions for configuring SPECIES to find MOOG."""
+    moogsilent = prefix / "MOOGSILENT"
+    print()
+    print("To use with SPECIES, either:")
+    print()
+    print(f"  1. Add to PATH:  export PATH=\"{prefix}:$PATH\"")
+    print()
+    print("  2. Set environment variable:")
+    print(f"     export SPECIES_MOOG_BINARY={moogsilent}")
+    print(f"     export SPECIES_MOOG_DATA_DIR={prefix}")
+    print()
+    print("  3. Pass in Python:")
+    print(f"     Settings(moog_binary=\"{moogsilent}\", moog_data_dir=\"{prefix}\")")
+    print()
+    print("Add the export lines to your ~/.bashrc or ~/.zshrc to make permanent.")
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    """Check SPECIES installation and dependencies."""
+    import shutil
+
+    from species import __version__
+    from species.config import Settings
+
+    print(f"SPECIES v{__version__}")
+    print()
+
+    config = Settings()
+    ok = True
+
+    # Check MOOG
+    moog_path = shutil.which(config.moog_binary)
+    if moog_path:
+        print(f"  MOOG binary:     {moog_path}")
+    else:
+        # Check common locations
+        home_moog = Path.home() / ".species" / "moog" / "MOOGSILENT"
+        if home_moog.exists():
+            print(f"  MOOG binary:     {home_moog} (not on PATH)")
+            print(f"                   Run: export PATH=\"{home_moog.parent}:$PATH\"")
+        else:
+            print(f"  MOOG binary:     NOT FOUND")
+            print(f"                   Run: species install-moog")
+            ok = False
+    print()
+
+    # Check ATLAS9 grids
+    grid_dir = config.atlas9_dir
+    pickle_path = grid_dir / "ATLAS9_grid.pickle"
+    grids_dir = grid_dir / "grids"
+    if pickle_path.exists():
+        size_mb = pickle_path.stat().st_size / 1e6
+        print(f"  ATLAS9 grid:     {pickle_path} ({size_mb:.0f} MB)")
+    elif grids_dir.exists():
+        print(f"  ATLAS9 grid:     {grids_dir} (raw files, pickle will be created on first run)")
+    else:
+        print(f"  ATLAS9 grid:     NOT FOUND at {grid_dir}")
+        print(f"                   Set SPECIES_ATLAS9_DIR to the directory containing grids/")
+        ok = False
+    print()
+
+    # Check linelists
+    for name, path in [
+        ("Iron linelist", config.linelist_path),
+        ("Abundance linelist", config.linelist_ab_path),
+        ("Binary mask", config.mask_path),
+    ]:
+        if path and path.exists():
+            print(f"  {name:20s} {path}")
+        else:
+            print(f"  {name:20s} NOT FOUND: {path}")
+            ok = False
+    print()
+
+    # Check optional deps
+    for pkg, desc in [
+        ("astroquery", "Vizier photometric lookups"),
+    ]:
+        try:
+            __import__(pkg)
+            print(f"  {pkg:20s} installed")
+        except ImportError:
+            print(f"  {pkg:20s} not installed (optional: {desc})")
+    print()
+
+    if ok:
+        print("All required dependencies found.")
+    else:
+        print("Some dependencies are missing. See above.")
+
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
