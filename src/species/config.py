@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     # -- Science defaults ----------------------------------------------------
     fe_solar: float = Field(default=7.50, description="Solar iron abundance (Asplund 2009).")
     tolerance: Tolerance = Field(default_factory=Tolerance)
-    minimization: Literal["per_parameter", "downhill_simplex"] = "per_parameter"
+    minimization: Literal["broyden", "per_parameter", "downhill_simplex"] = "broyden"
     read_mode: Literal["linearregression", "odr", "moog"] = "linearregression"
 
     # -- Pipeline toggles ----------------------------------------------------

@@ -279,8 +279,17 @@ class AtmosphereFitter:
         if method is None:
             method = self.config.minimization
 
+        if method == "broyden":
+            return self._fit_broyden(linelist_path, initial_params, hold, boundaries)
         if method == "downhill_simplex":
             return self._fit_simplex(linelist_path, initial_params, hold, boundaries)
+        if method == "per_parameter":
+            return self._fit_per_parameter(linelist_path, initial_params, hold, boundaries)
+        # Default: try Broyden first, fall back to per_parameter
+        result = self._fit_broyden(linelist_path, initial_params, hold, boundaries)
+        if result.converged:
+            return result
+        logger.info("Broyden did not converge, falling back to per_parameter")
         return self._fit_per_parameter(linelist_path, initial_params, hold, boundaries)
 
     # ------------------------------------------------------------------
@@ -604,6 +613,193 @@ class AtmosphereFitter:
         return AtmosphericParameters(
             teff=teff, logg=logg, feh=feh, vt=vt,
             converged=False, method="per_parameter",
+        )
+
+    # ------------------------------------------------------------------
+    # Broyden's method (quasi-Newton, path-independent convergence)
+    # ------------------------------------------------------------------
+
+    # Perturbation step sizes for finite-difference Jacobian
+    _FD_STEPS = np.array([100.0, 0.2, 0.1, 0.2])
+
+    # Max step per iteration (trust region)
+    _MAX_STEPS = np.array([500.0, 0.5, 0.3, 0.5])
+
+    # Parameter bounds
+    _BOUNDS = np.array([
+        [3500.0, 9000.0],  # Teff
+        [0.5, 4.9],        # logg
+        [-4.0, 0.6],       # [Fe/H]
+        [0.1, 5.0],        # vt
+    ])
+
+    def _fit_broyden(
+        self,
+        linelist_path: Path,
+        initial: tuple[float, float, float, float],
+        hold: list[str],
+        boundaries: dict[str, tuple[float, float]] | None,
+    ) -> AtmosphericParameters:
+        """Broyden's first method for atmospheric parameter determination.
+
+        Solves the 4x4 nonlinear system:
+            f1 = EP_slope → 0          (excitation balance)
+            f2 = FeI - FeII → 0        (ionization balance)
+            f3 = derived_feh - input_feh → 0  (abundance consistency)
+            f4 = RW_slope → 0          (microturbulence balance)
+
+        Typically converges in 10-20 MOOG calls vs 100-200 for bisection.
+        Uses finite-difference initial Jacobian + rank-1 Broyden updates.
+        """
+        feh0, teff0, logg0, vt0 = initial
+        params = np.array([teff0, logg0, feh0, vt0], dtype=float)
+        params = np.clip(params, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
+        n_calls = 0
+        last_result: AbfindResult | None = None
+
+        with self.moog.open_session(linelist_path) as session:
+            def moog_func(p: np.ndarray) -> tuple[np.ndarray, AbfindResult | None]:
+                """Evaluate the 4 diagnostics at parameter vector p."""
+                teff, logg, feh, vt = p
+                ok = self.grid.interpolate_and_write(
+                    teff, logg, feh, vt, session.model_path,
+                    fe_solar=self.config.fe_solar,
+                )
+                if not ok:
+                    return np.array([1e10, 1e10, 1e10, 1e10]), None
+                try:
+                    r = session.run_abfind(read_mode=self.config.read_mode)
+                except MOOGError:
+                    return np.array([1e10, 1e10, 1e10, 1e10]), None
+
+                ab = r.fe_i_abundance - self.config.fe_solar
+                return np.array([r.ep_slope, r.fe_i_fe_ii_diff, ab - feh, r.rw_slope]), r
+
+            # Initial evaluation
+            f0, last_result = moog_func(params)
+            n_calls += 1
+            quadr = np.linalg.norm(f0)
+
+            # Convergence threshold: L2 norm of 4 residuals. Each residual
+            # should be < tol (0.001), so ||f|| < sqrt(4)*tol ≈ 0.002. Use 0.005
+            # for robustness (individual components may be slightly above tol).
+            convergence_tol = 5.0 * self.config.tolerance.ab
+
+            if quadr < convergence_tol:
+                return self._broyden_result(params, last_result, True, n_calls, "broyden")
+
+            # Compute initial Jacobian via finite differences (4 extra calls)
+            J = np.zeros((4, 4))
+            for j in range(4):
+                p_pert = params.copy()
+                p_pert[j] += self._FD_STEPS[j]
+                p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
+                step = p_pert[j] - params[j]
+                if abs(step) < 1e-10:
+                    p_pert[j] = params[j] - self._FD_STEPS[j]
+                    p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
+                    step = p_pert[j] - params[j]
+                f_pert, _ = moog_func(p_pert)
+                n_calls += 1
+                J[:, j] = (f_pert - f0) / step
+
+            logger.info(
+                "Broyden init: ||f||=%.4f at T=%.0f logg=%.2f feh=%.3f vt=%.3f (%d calls)",
+                quadr, *params, n_calls,
+            )
+
+            # Main Broyden iteration loop
+            stagnation = 0
+            for iteration in range(1, 30):
+                # Solve J @ delta = -f
+                try:
+                    delta = -np.linalg.solve(J, f0)
+                except np.linalg.LinAlgError:
+                    logger.warning("Singular Jacobian at iteration %d", iteration)
+                    break
+
+                # Trust region: clamp step size
+                scale = 1.0
+                for i in range(4):
+                    if abs(delta[i]) > self._MAX_STEPS[i]:
+                        scale = min(scale, self._MAX_STEPS[i] / abs(delta[i]))
+                if scale < 1.0:
+                    delta *= scale
+
+                # Take step with box constraint projection
+                params_new = np.clip(params + delta, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
+                f_new, result_new = moog_func(params_new)
+                n_calls += 1
+
+                if result_new is not None:
+                    last_result = result_new
+
+                new_quadr = np.linalg.norm(f_new)
+                logger.info(
+                    "Broyden %2d: ||f||=%.4f T=%.0f logg=%.3f feh=%.4f vt=%.4f (%d calls)",
+                    iteration, new_quadr, *params_new, n_calls,
+                )
+
+                # Broyden rank-1 update
+                actual_dx = params_new - params
+                actual_df = f_new - f0
+                denom = actual_dx @ actual_dx
+                if denom > 1e-30:
+                    J = J + np.outer(actual_df - J @ actual_dx, actual_dx) / denom
+
+                params = params_new
+                prev_quadr = quadr
+                quadr = new_quadr
+                f0 = f_new
+
+                # Convergence check
+                if quadr < convergence_tol:
+                    logger.info(
+                        "Broyden converged in %d iterations (%d MOOG calls)",
+                        iteration, n_calls,
+                    )
+                    return self._broyden_result(params, last_result, True, n_calls, "broyden")
+
+                # Stagnation detection
+                if abs(prev_quadr - quadr) < 1e-7:
+                    stagnation += 1
+                    if stagnation >= 3:
+                        logger.warning("Broyden stagnated, resetting Jacobian")
+                        for j in range(4):
+                            p_pert = params.copy()
+                            p_pert[j] += self._FD_STEPS[j]
+                            p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
+                            step = p_pert[j] - params[j]
+                            f_pert, _ = moog_func(p_pert)
+                            n_calls += 1
+                            J[:, j] = (f_pert - f0) / step
+                        stagnation = 0
+                else:
+                    stagnation = 0
+
+        logger.warning("Broyden did not converge after %d calls", n_calls)
+        return self._broyden_result(params, last_result, False, n_calls, "broyden")
+
+    def _broyden_result(
+        self,
+        params: np.ndarray,
+        result: AbfindResult | None,
+        converged: bool,
+        n_calls: int,
+        method: str,
+    ) -> AtmosphericParameters:
+        teff, logg, feh, vt = params
+        return AtmosphericParameters(
+            teff=float(teff),
+            logg=float(logg),
+            feh=float(feh),
+            vt=float(vt),
+            n_fe_i=result.n_fe_i if result else 0,
+            n_fe_ii=result.n_fe_ii if result else 0,
+            fe_i_abundance=result.fe_i_abundance if result else 0.0,
+            fe_ii_abundance=result.fe_ii_abundance if result else 0.0,
+            converged=converged,
+            method=method,
         )
 
     # ------------------------------------------------------------------
