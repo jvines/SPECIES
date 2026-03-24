@@ -163,11 +163,16 @@ class TestParFile:
 class TestMOOGRunner:
     """Test MOOG execution (requires MOOG binary)."""
 
-    def test_moog_not_found(self):
+    def test_moog_not_found(self, tmp_path):
         from species.moog.wrapper import MOOGRunner, MOOGError
+        # Create dummy input files so we get past the copy step
+        model = tmp_path / "model.atm"
+        model.write_text("KURUCZ\n")
+        lines = tmp_path / "lines.txt"
+        lines.write_text("test\n")
         runner = MOOGRunner(moog_binary="/nonexistent/MOOGSILENT")
         with pytest.raises(MOOGError, match="not found"):
-            runner.run_abfind(Path("/tmp/model.atm"), Path("/tmp/lines.txt"))
+            runner.run_abfind(model, lines)
 
     def test_abfind_solar(self, config, tmp_path):
         """Run MOOG abfind on solar model — the critical integration test."""

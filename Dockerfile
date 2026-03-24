@@ -1,5 +1,5 @@
 # ── Stage 0: base ──────────────────────────────────────────────────────
-# System deps + MOOG compilation. Rebuilds only when MOOG source changes.
+# System deps + MOOG compilation from moog17scat (headless, no X11/SM).
 FROM python:3.12-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,14 +8,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Compile MOOG from the bundled source
-COPY MOOGFEB2017/ /opt/moog/
-WORKDIR /opt/moog
-# Build MOOGSILENT if Makefile or source exists
-RUN if [ -f Makefile ]; then make -f Makefile 2>/dev/null || true; fi
-# If there's a pre-compiled binary, use it; otherwise check the build
-RUN ls -la /opt/moog/MOOGSILENT 2>/dev/null || echo "MOOG binary not found — will need to be provided"
-ENV PATH="/opt/moog:${PATH}"
+# Clone and compile moog17scat (headless MOOG variant, no X11/SM deps)
+ARG MOOG_COMMIT=53d3f645f18c1acfb568c5ed7ea0c4e4551ef5e5
+RUN git clone https://github.com/jvines/moog17scat.git /opt/moog17scat \
+    && cd /opt/moog17scat \
+    && git checkout $MOOG_COMMIT \
+    && make \
+    && ls -la MOOGSILENT
+ENV PATH="/opt/moog17scat:${PATH}"
+# MOOG hardcodes /moog17scat/ for Barklem data files
+RUN ln -sf /opt/moog17scat /moog17scat
 
 # ── Stage 1: python deps ──────────────────────────────────────────────
 FROM base AS deps
@@ -35,15 +37,18 @@ FROM deps AS app
 COPY src/ /app/src/
 COPY tests/ /app/tests/
 
-# Copy ATLAS9 grids (mounted as volume in production, copied for testing)
-# These are expected at /app/atm_models/atlas9/ or via SPECIES_ATLAS9_DIR env
+# Copy ATLAS9 grids
 COPY atm_models/ /app/atm_models/
 
-# Copy sample spectra for testing
+# Copy sample spectra and data for testing
 COPY Spectra/ /app/Spectra/
 COPY EW/ /app/EW/
 COPY binary_masks/ /app/binary_masks/
 COPY MOOG_linelist/ /app/MOOG_linelist/
+# Copy MOOG support files (Barklem.dat etc) from the bundled MOOGFEB2017
+COPY MOOGFEB2017/Barklem.dat MOOGFEB2017/BarklemUV.dat /app/MOOGFEB2017/
+# Copy abfind.par template
+COPY MOOGFEB2017/abfind.par /opt/moog17scat/abfind.par
 
 # Install the package in editable mode
 RUN pip install --no-cache-dir -e .
@@ -51,7 +56,7 @@ RUN pip install --no-cache-dir -e .
 # Set environment for SPECIES
 ENV SPECIES_ATLAS9_DIR=/app/atm_models/atlas9
 ENV SPECIES_MOOG_BINARY=MOOGSILENT
-ENV SPECIES_MOOG_DATA_DIR=/opt/moog
+ENV SPECIES_MOOG_DATA_DIR=/opt/moog17scat
 
 WORKDIR /app
 
