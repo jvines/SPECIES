@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
+
 from species.atmosphere import AtmosphereFitter, AtmosphericParameters
 from species.config import Settings
 from species.errors import ParameterErrors, compute_errors
@@ -207,9 +209,19 @@ class Analyzer:
         abundances: dict[str, ElementAbundanceResult] = {}
         if self.config.compute_abundances and params.converged:
             logger.info("Determining chemical abundances")
-            # TODO: implement full multi-element MOOG run
-            # For now this is a placeholder — Phase 6 abundances module
-            # needs the MOOG wrapper to run with abundance linelist
+            from species.abundances import determine_abundances
+            snr_scalar = float(spec_1d.snr) if not hasattr(spec_1d.snr, "__len__") else float(np.median(spec_1d.snr))
+            raw_ab = determine_abundances(
+                params, spec_1d.wavelength, spec_1d.flux, snr_scalar,
+                self.config, self.moog, self.grid,
+            )
+            abundances = {
+                name: ElementAbundanceResult(
+                    element=ab.element, abundance=ab.abundance,
+                    uncertainty=ab.uncertainty, n_lines=ab.n_lines,
+                )
+                for name, ab in raw_ab.items()
+            }
 
         # 7. Broadening (vsini, vmac)
         broadening: BroadeningResult | None = None
@@ -230,7 +242,6 @@ class Analyzer:
         # Build metadata
         snr_val = spec.snr
         if hasattr(snr_val, "__len__"):
-            import numpy as np
             snr_val = float(np.median(snr_val))
 
         metadata = AnalysisMetadata(
