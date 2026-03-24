@@ -426,10 +426,10 @@ class AtmosphereFitter:
 
             if abs(ep) <= state.tol.ep:
                 ab = state.moog[0]
-                if ab == state.params["metallicity"].value:
-                    state.advance_parameter()
+                if np.isclose(ab, state.params["metallicity"].value, atol=2 * state.tol.ab):
+                    state.advance_parameter()  # T → pressure
                 else:
-                    state.change = "velocity"
+                    state.change = "metallicity"  # ab drifted, re-converge [Fe/H]
                 break
 
             t_param = state.params["temperature"]
@@ -456,7 +456,7 @@ class AtmosphereFitter:
 
             # Check if metallicity has cycled (same value 3 times)
             if self._check_met_cycle(state):
-                state.change = "velocity"
+                state.change = "metallicity"  # new_change('velocity') = metallicity
                 break
 
         return met_idx
@@ -472,10 +472,10 @@ class AtmosphereFitter:
 
             if abs(dif) <= state.tol.dif:
                 ab = state.moog[0]
-                if ab == state.params["metallicity"].value:
-                    state.advance_parameter()
+                if np.isclose(ab, state.params["metallicity"].value, atol=2 * state.tol.ab):
+                    state.advance_parameter()  # P → velocity
                 else:
-                    state.change = "velocity"
+                    state.change = "metallicity"  # ab drifted, re-converge [Fe/H]
                 break
 
             g_param = state.params["gravity"]
@@ -500,7 +500,7 @@ class AtmosphereFitter:
             met_idx = (met_idx + 1) % 3
 
             if self._check_met_cycle(state):
-                state.change = "velocity"
+                state.change = "metallicity"  # new_change('velocity') = metallicity
                 break
 
         return met_idx
@@ -516,10 +516,10 @@ class AtmosphereFitter:
 
             if abs(rw) <= state.tol.rw:
                 ab = state.moog[0]
-                if ab == state.params["metallicity"].value:
-                    state.change = "metallicity"
+                if np.isclose(ab, state.params["metallicity"].value, atol=state.tol.ab):
+                    state.change = "temperature"  # next_change('metallicity') = temperature
                 else:
-                    state.change = "velocity"
+                    state.change = "metallicity"  # ab drifted, re-converge [Fe/H]
                 break
 
             vt_param = state.params["velocity"]
@@ -544,7 +544,7 @@ class AtmosphereFitter:
             met_idx = (met_idx + 1) % 3
 
             if self._check_met_cycle(state):
-                state.change = "velocity"
+                state.change = "metallicity"  # new_change('velocity') = metallicity
                 break
         else:
             # Hit 50-iteration limit
@@ -581,9 +581,21 @@ class AtmosphereFitter:
 
     @staticmethod
     def _check_met_cycle(state: _ConvergenceState) -> bool:
-        """Check if metallicity ranges have cycled (same value 3 times)."""
+        """Check if metallicity ranges have cycled (same value 3 times).
+
+        Uses np.isclose instead of exact == to handle float64 precision
+        differences between MOOG runs (the original Python 2 code used
+        Python floats where exact equality was more likely).
+        """
         r = state.params["metallicity"].ranges
-        return (r[0] == r[1]) and (r[1] == r[2]) and (r[0] != state.params["metallicity"].value)
+        if r[0] == -999.0 or r[1] == -999.0 or r[2] == -999.0:
+            return False
+        atol = state.tol.ab
+        return (
+            np.isclose(r[0], r[1], atol=atol)
+            and np.isclose(r[1], r[2], atol=atol)
+            and not np.isclose(r[0], state.params["metallicity"].value, atol=atol)
+        )
 
     @staticmethod
     def _failed_result(state: _ConvergenceState) -> AtmosphericParameters:
