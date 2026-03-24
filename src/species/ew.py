@@ -21,7 +21,10 @@ import numpy as np
 from astropy.io import ascii as asc
 from scipy import interpolate
 from scipy.signal import convolve as scipy_convolve
-import scipy.odr as ODR
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="scipy.odr.*deprecated", category=DeprecationWarning)
+    import scipy.odr as ODR  # TODO: migrate to odrpack when API stabilizes
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +195,9 @@ class _LineWindow:
         yfit = p(x)
 
         for _ in range(n_passes):
-            dif = np.concatenate([np.abs((y[:-1] - y[1:]) / y[:-1]), [1.0]])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                dif = np.concatenate([np.abs((y[:-1] - y[1:]) / y[:-1]), [1.0]])
+            dif = np.nan_to_num(dif, nan=1.0, posinf=1.0, neginf=1.0)
             mask = ((y - yfit * self.rejt) > 0) & (dif < 0.1)
             if np.sum(mask) < order + 1:
                 break

@@ -144,7 +144,8 @@ def determine_abundances(
 # ---------------------------------------------------------------------------
 
 # Regex patterns
-_RE_SPECIES = re.compile(r"Abundance Results for Species\s+(.+)")
+# Capture only the species name (e.g. "Fe I"), not the "(input abundance = ...)" part
+_RE_SPECIES = re.compile(r"Abundance Results for Species\s+(\S+\s*\S*?)\s*(?:\(|\.)")
 _RE_HAS_ALPHA = re.compile(r"[a-z]")
 _RE_LINE_DATA = re.compile(r"[\d]+\s+[\d]+.+")
 _RE_FAILED = re.compile(r"OH NO! ANOTHER FAILED|CANNOT DECIDE")

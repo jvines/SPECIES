@@ -211,7 +211,9 @@ def normalize_for_ccf(wavelength: np.ndarray, flux: np.ndarray) -> np.ndarray:
     yfit = p(wavelength)
 
     for _ in range(3):
-        dif = np.concatenate([np.abs((flux[:-1] - flux[1:]) / flux[:-1]), [1.0]])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dif = np.concatenate([np.abs((flux[:-1] - flux[1:]) / flux[:-1]), [1.0]])
+        dif = np.nan_to_num(dif, nan=1.0, posinf=1.0, neginf=1.0)
         mask = ((flux - yfit * rejt) > 0) & (dif < 0.1)
         if np.sum(mask) < 3:
             break
