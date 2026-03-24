@@ -72,11 +72,33 @@ result.to_fits("results.fits")
 result.to_dict()  # for databases, JSON, etc.
 ```
 
+### Batch processing
+
+```python
+from pathlib import Path
+from species import Spectrum, Analyzer
+
+# Load multiple spectra
+spectra = [Spectrum.from_fits(f) for f in Path("spectra/").glob("*.fits")]
+
+# Analyze in parallel (4 cores)
+results = Analyzer.batch(spectra, output_dir="./results", n_cores=4)
+
+for result in results:
+    print(f"{result.star_name}: T={result.params.teff:.0f}  [Fe/H]={result.params.feh:.3f}")
+```
+
 ### Command line
 
 ```bash
-# Full analysis
+# Single star
 species analyze my_star.fits --output ./results
+
+# Multiple stars
+species analyze star1.fits star2.fits star3.fits --output ./results
+
+# Glob pattern + parallel
+species analyze spectra/*.fits --ncores 4
 
 # Skip broadening (faster)
 species analyze my_star.fits --no-broadening

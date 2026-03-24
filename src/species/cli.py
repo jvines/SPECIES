@@ -28,9 +28,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- analyze ---
     p_analyze = sub.add_parser("analyze", help="Run full spectroscopic analysis")
-    p_analyze.add_argument("spectrum", type=Path, help="Path to FITS spectrum")
+    p_analyze.add_argument("spectra", type=Path, nargs="+", help="Path(s) to FITS spectra")
     p_analyze.add_argument("--instrument", "-i", default=None, help="Instrument name (auto-detected if omitted)")
     p_analyze.add_argument("--output", "-o", type=Path, default=Path("./output"), help="Output directory")
+    p_analyze.add_argument("--ncores", "-n", type=int, default=1, help="Number of parallel workers")
     p_analyze.add_argument("--giant", action="store_true", help="Treat as giant star")
     p_analyze.add_argument("--no-broadening", action="store_true", help="Skip vsini/vmac measurement")
     p_analyze.add_argument("--no-abundances", action="store_true", help="Skip chemical abundances")
@@ -90,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
-    """Run full analysis pipeline."""
+    """Run full analysis pipeline on one or more spectra."""
     from species.spectrum import Spectrum
     from species.analyzer import Analyzer
     from species.config import Settings
@@ -101,9 +102,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     if args.method:
         config.minimization = args.method
 
-    spec = Spectrum.from_fits(args.spectrum, instrument=args.instrument)
-    analyzer = Analyzer(spec, output_dir=args.output, config=config)
-    analyzer.configure(
+    configure_kwargs = dict(
         is_giant=args.giant,
         compute_broadening=not args.no_broadening,
         compute_abundances=not args.no_abundances,
@@ -111,9 +110,55 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         compute_rest_frame=not args.no_restframe,
     )
 
-    result = analyzer.run()
+    spectra = [Spectrum.from_fits(p, instrument=args.instrument) for p in args.spectra]
 
-    # Output
+    if len(spectra) == 1:
+        # Single star — direct run with full output
+        analyzer = Analyzer(spectra[0], output_dir=args.output, config=config)
+        analyzer.configure(**configure_kwargs)
+        result = analyzer.run()
+        _print_result(result)
+        _write_result(result, args.output, args.format)
+        elapsed = time.time() - t0
+        print(f"Time: {elapsed:.1f}s")
+        return 0 if result.params.converged else 1
+
+    # Multiple stars — batch mode
+    n = len(spectra)
+    ncores = min(args.ncores, n)
+    print(f"Analyzing {n} spectra ({ncores} worker{'s' if ncores > 1 else ''})...\n")
+
+    results = Analyzer.batch(
+        spectra,
+        output_dir=args.output,
+        config=config,
+        n_cores=ncores,
+        **configure_kwargs,
+    )
+
+    # Summary table
+    all_ok = True
+    for result in results:
+        status = "OK" if result.params.converged else "FAIL"
+        if not result.params.converged:
+            all_ok = False
+        n_ab = len(result.abundances)
+        print(
+            f"  [{status:4s}] {result.star_name:20s}  "
+            f"T={result.params.teff:7.1f}  logg={result.params.logg:5.3f}  "
+            f"[Fe/H]={result.params.feh:+6.3f}  vt={result.params.vt:5.3f}  "
+            f"({n_ab} abundances)"
+        )
+        _write_result(result, args.output, args.format)
+
+    elapsed = time.time() - t0
+    n_converged = sum(1 for r in results if r.params.converged)
+    print(f"\n{n_converged}/{n} converged in {elapsed:.1f}s")
+    return 0 if all_ok else 1
+
+
+def _print_result(result) -> None:
+    """Print detailed results for a single star."""
     if result.params.converged:
         print(f"Converged: T={result.params.teff:.0f} K  "
               f"logg={result.params.logg:.2f}  "
@@ -138,18 +183,14 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         print(f"Broadening: vsini={result.broadening.vsini:.2f} ± {result.broadening.vsini_err:.2f} km/s  "
               f"vmac={result.broadening.vmac:.2f} ± {result.broadening.vmac_err:.2f} km/s")
 
-    # Write output files
-    out_dir = Path(args.output)
-    if args.format in ("ascii", "both"):
-        p = result.to_ascii(out_dir / f"{result.star_name}_results.dat")
-        print(f"Wrote: {p}")
-    if args.format in ("fits", "both"):
-        p = result.to_fits(out_dir / f"{result.star_name}_results.fits")
-        print(f"Wrote: {p}")
 
-    elapsed = time.time() - t0
-    print(f"Time: {elapsed:.1f}s")
-    return 0 if result.params.converged else 1
+def _write_result(result, output_dir: Path, fmt: str) -> None:
+    """Write result files for one star."""
+    out = Path(output_dir)
+    if fmt in ("ascii", "both"):
+        result.to_ascii(out / f"{result.star_name}_results.dat")
+    if fmt in ("fits", "both"):
+        result.to_fits(out / f"{result.star_name}_results.fits")
 
 
 def _cmd_ew_only(args: argparse.Namespace) -> int:

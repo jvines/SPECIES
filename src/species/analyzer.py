@@ -288,6 +288,114 @@ class Analyzer:
             self.config.compute_abundances, self.config.compute_broadening = saved
 
     # ------------------------------------------------------------------
+    # Batch processing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def batch(
+        spectra: list[Spectrum],
+        output_dir: Path | None = None,
+        config: Settings | None = None,
+        n_cores: int = 1,
+        **configure_kwargs,
+    ) -> list[AnalysisResult]:
+        """Analyze multiple spectra, optionally in parallel.
+
+        Parameters
+        ----------
+        spectra
+            List of Spectrum objects to analyze.
+        output_dir
+            Base output directory. Each star gets a subdirectory.
+        config
+            Shared configuration. If ``None``, uses defaults.
+        n_cores
+            Number of parallel workers. 1 = sequential.
+        **configure_kwargs
+            Passed to ``configure()`` for each analyzer (e.g. ``is_giant=True``).
+
+        Returns
+        -------
+        list[AnalysisResult]
+            One result per input spectrum, in the same order.
+
+        Usage::
+
+            spectra = [Spectrum.from_fits(f) for f in fits_files]
+            results = Analyzer.batch(spectra, n_cores=4)
+        """
+        config = config or Settings()
+        output_dir = Path(output_dir or config.output_dir)
+
+        if n_cores <= 1 or len(spectra) <= 1:
+            results = []
+            for spec in spectra:
+                star_dir = output_dir / spec.star_name
+                analyzer = Analyzer(spec, output_dir=star_dir, config=config)
+                if configure_kwargs:
+                    analyzer.configure(**configure_kwargs)
+                try:
+                    results.append(analyzer.run())
+                except Exception as e:
+                    logger.error("Failed to analyze %s: %s", spec.star_name, e)
+                    results.append(AnalysisResult(
+                        star_name=spec.star_name,
+                        params=AtmosphericParameters(),
+                        metadata=AnalysisMetadata(instrument=spec.instrument),
+                    ))
+            return results
+
+        # Parallel execution
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        def _run_one(spec_data: tuple) -> AnalysisResult:
+            """Worker function — must be top-level picklable."""
+            wave, flux, snr, instrument, star_name, star_dir_str, config_dict, kwargs = spec_data
+            cfg = Settings(**config_dict)
+            spec = Spectrum.from_arrays(wave, flux, snr=snr, instrument=instrument, star_name=star_name)
+            analyzer = Analyzer(spec, output_dir=Path(star_dir_str), config=cfg)
+            if kwargs:
+                analyzer.configure(**kwargs)
+            return analyzer.run()
+
+        # Serialize spectra for pickling (numpy arrays + metadata)
+        tasks = []
+        for spec in spectra:
+            star_dir = output_dir / spec.star_name
+            # Extract config as dict for serialization
+            config_dict = {
+                k: str(v) if isinstance(v, Path) else v
+                for k, v in config.model_dump().items()
+                if v is not None
+            }
+            tasks.append((
+                spec.wavelength, spec.flux, spec.snr,
+                spec.instrument, spec.star_name,
+                str(star_dir), config_dict, configure_kwargs,
+            ))
+
+        results: list[AnalysisResult | None] = [None] * len(spectra)
+        with ProcessPoolExecutor(max_workers=min(n_cores, len(spectra))) as pool:
+            futures = {
+                pool.submit(_run_one, task): i
+                for i, task in enumerate(tasks)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                    logger.info("Completed %s", spectra[idx].star_name)
+                except Exception as e:
+                    logger.error("Failed %s: %s", spectra[idx].star_name, e)
+                    results[idx] = AnalysisResult(
+                        star_name=spectra[idx].star_name,
+                        params=AtmosphericParameters(),
+                        metadata=AnalysisMetadata(instrument=spectra[idx].instrument),
+                    )
+
+        return results
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
