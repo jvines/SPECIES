@@ -174,7 +174,7 @@ Instrument is auto-detected from the FITS header `INSTRUME` keyword or the filen
 
 ### What was removed
 
-- **Isochrone fitting** (`FindIsochrones.py`): Mass, age, and radius determination is now handled by downstream tools (Lachesis). SPECIES focuses on spectroscopy.
+- **Isochrone fitting** (`FindIsochrones.py`): Mass, age, and radius determination is now handled by downstream tools. SPECIES focuses on spectroscopy.
 - **Python 2 compatibility**: `from __future__` imports, `past.utils.old_div`, `builtins` shims.
 - **MultiNest/emcee dependencies**: These were only used by the isochrone module.
 - **`mwdust` dependency**: Extinction correction is handled elsewhere.
