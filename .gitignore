@@ -1,1 +1,21 @@
 __pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Raw ATLAS9 grids (pickle is bundled, raw files not needed)
+atm_models/

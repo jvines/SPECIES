@@ -4,7 +4,7 @@ A modern stellar spectroscopy pipeline for determining atmospheric parameters,
 chemical abundances, and broadening from high-resolution spectra.
 """
 
-__version__ = "4.0.0a1"
+__version__ = "4.0.0"
 
 # Public API — lazy imports to avoid pulling in heavy deps at import time
 def __getattr__(name: str):
