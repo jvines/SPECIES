@@ -123,35 +123,38 @@ def write_synth_par(
     """
     observed_line = f"observed_in    '{observed_path}'" if observed_path else ""
 
-    content = dedent(f"""\
-        synth
-        terminal       'x11'
-        standard_out   '{standard_out}'
-        summary_out    '{summary_out}'
-        smoothed_out   '{smoothed_out}'
-        {observed_line}
-        model_in       '{model_path}'
-        lines_in       '{linelist_path}'
-        atmosphere     {atmosphere}
-        molecules      {molecules}
-        trudamp        {trudamp}
-        lines          {lines}
-        flux/int       {flux_int}
-        damping        {damping}
-        freeform       {freeform}
-        plot           {plot}
-        synlimits
-          {wave_start:.2f}  {wave_end:.2f}  {wave_step:.4f}  {opacity_range:.2f}
-    """).strip()
+    # Build par file matching MOOG's expected format exactly.
+    # Order matters: abundances BEFORE synlimits, species IDs as integers.
+    lines_out = [
+        "synth",
+        f"standard_out  '{standard_out}'",
+        f"summary_out   '{summary_out}'",
+        f"smoothed_out  '{smoothed_out}'",
+    ]
+    if observed_path:
+        lines_out.append(f"observed_in   '{observed_path}'")
+    lines_out.extend([
+        f"model_in      '{model_path}'",
+        f"lines_in      '{linelist_path}'",
+        f"atmosphere    {atmosphere}",
+        f"molecules     {molecules}",
+        f"trudamp       {trudamp}",
+        f"lines         {lines}",
+        f"flux/int      {flux_int}",
+        f"damping       {damping}",
+        f"freeform      {freeform}",
+        f"plot          {plot}",
+    ])
 
-    # Abundance block
+    # Abundances block (must come before synlimits)
     if species_ids and abundances and len(species_ids) == len(abundances):
-        content += f"\nabundances     {n_species}  1"
+        lines_out.append(f"abundances    {n_species}  1")
         for sid, ab in zip(species_ids, abundances):
-            content += f"\n  {sid:.1f}   {ab:.3f}"
+            lines_out.append(f"   {int(sid)} {ab:.6f}")
 
-    content += "\n"
+    lines_out.append("isotopes      0  1")
+    lines_out.append("synlimits")
+    lines_out.append(f" {wave_start:.2f} {wave_end:.2f} {wave_step:.4f} {opacity_range:.1f}")
 
-    lines_out = [ln for ln in content.splitlines() if ln.strip()]
     output_path.write_text("\n".join(lines_out) + "\n")
     return output_path

@@ -236,6 +236,33 @@ class BroadeningFitter:
 
         return best_vsini, err_vsini
 
+    def _get_synth_linelist(self) -> Path:
+        """Create a MOOG-format linelist for synth mode from the vsini linelist.
+
+        MOOG synth expects: wavelength  species  EP  loggf
+        The bundled linelist_vsini.dat has headers and named columns.
+        """
+        if hasattr(self, '_synth_linelist_path') and self._synth_linelist_path.exists():
+            return self._synth_linelist_path
+
+        from astropy.io import ascii as asc
+        data = asc.read(self.config.linelist_vsini_path, comment="-")
+
+        import tempfile
+        path = Path(tempfile.mktemp(prefix="species_synth_lines_", suffix=".txt"))
+        with open(path, "w") as f:
+            f.write("MOOG synth linelist\n")
+            for row in data:
+                wl = float(row["WL"])
+                ion = float(row["lt"])  # e.g. 26.0 for Fe I, 26.1 for Fe II
+                ep = float(row["Excit"])
+                loggf = float(row["loggf"])
+                # Match the exact MOOG linelist format used by abfind
+                f.write(f"  {wl:7.2f}    {ion:4.1f}        {ep:5.2f}     {loggf:6.3f}\n")
+
+        self._synth_linelist_path = path
+        return path
+
     def _synthesize_unbroadened(
         self,
         model_path: Path,
@@ -244,17 +271,19 @@ class BroadeningFitter:
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Run MOOG synth ONCE to produce the unbroadened synthetic spectrum."""
         try:
+            synth_linelist = self._get_synth_linelist()
             smoothed = self.moog.run_synth(
                 model_path,
-                self.config.linelist_vsini_path,
+                synth_linelist,
                 wave_start=line_center - 3.0,
                 wave_end=line_center + 3.0,
                 wave_step=0.02,
                 species_ids=[float(line_info["Z"])],
-                abundances=[0.0],  # solar abundance offset
+                abundances=[0.0],
             )
 
-            synth_data = np.loadtxt(smoothed)
+            # MOOG smoothed output has a 2-line header
+            synth_data = np.loadtxt(smoothed, skiprows=2)
             synth_wave = synth_data[:, 0]
             synth_flux = synth_data[:, 1]
             smoothed.unlink(missing_ok=True)

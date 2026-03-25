@@ -21,10 +21,15 @@ import numpy as np
 from astropy.io import ascii as asc
 from scipy import interpolate
 from scipy.signal import convolve as scipy_convolve
-import warnings
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message="scipy.odr.*deprecated", category=DeprecationWarning)
-    import scipy.odr as ODR  # TODO: migrate to odrpack when API stabilizes
+try:
+    from odrpack import odr_fit as _odr_fit
+    _USE_ODRPACK = True
+except ImportError:
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="scipy.odr.*deprecated", category=DeprecationWarning)
+        import scipy.odr as _scipy_odr
+    _USE_ODRPACK = False
 
 logger = logging.getLogger(__name__)
 
@@ -293,22 +298,34 @@ class _LineWindow:
         n_comp = len(lines)
         mg = MultiGaussian(n_comp)
 
-        def model_func(beta, x_):
-            return mg(x_, *beta)
+        if _USE_ODRPACK:
+            # odrpack API: f(x, beta) — note argument order
+            def model_func(x_, beta):
+                return mg(x_, *beta)
 
-        func = ODR.Model(model_func)
+            # Weighted fit for parameters
+            out_w = _odr_fit(model_func, xv, yv, np.array(guess), weight_y=weights)
+            params = out_w.beta
 
-        # Weighted fit for parameters
-        data_w = ODR.Data(x=xv, y=yv, we=weights)
-        odr_w = ODR.ODR(data_w, func, beta0=guess)
-        out_w = odr_w.run()
-        params = out_w.beta
+            # Unweighted fit for errors
+            out_u = _odr_fit(model_func, xv, yv, np.array(guess))
+            errors = out_u.sd_beta
+        else:
+            # Fallback: scipy.odr (deprecated but functional)
+            def model_func_scipy(beta, x_):
+                return mg(x_, *beta)
 
-        # Unweighted fit for errors
-        data_u = ODR.Data(x=xv, y=yv)
-        odr_u = ODR.ODR(data_u, func, beta0=guess)
-        out_u = odr_u.run()
-        errors = out_u.sd_beta
+            func = _scipy_odr.Model(model_func_scipy)
+
+            data_w = _scipy_odr.Data(x=xv, y=yv, we=weights)
+            odr_w = _scipy_odr.ODR(data_w, func, beta0=guess)
+            out_w = odr_w.run()
+            params = out_w.beta
+
+            data_u = _scipy_odr.Data(x=xv, y=yv)
+            odr_u = _scipy_odr.ODR(data_u, func, beta0=guess)
+            out_u = odr_u.run()
+            errors = out_u.sd_beta
 
         return params, errors
 

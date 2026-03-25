@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.12",
+    "odrpack>=0.5",
     "astropy>=6.0",
     "matplotlib>=3.8",
     "pydantic>=2.5",
