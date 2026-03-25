@@ -45,7 +45,7 @@ species = "species.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-species = ["data/linelists/*.dat", "data/masks/*.mas"]
+species = ["data/linelists/*.dat", "data/masks/*.mas", "data/*.pickle"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

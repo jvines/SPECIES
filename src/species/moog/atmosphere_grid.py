@@ -48,8 +48,8 @@ class AtmosphereGrid:
     _instance: ClassVar[AtmosphereGrid | None] = None
     _instance_dir: ClassVar[Path | None] = None
 
-    def __init__(self, atlas9_dir: Path) -> None:
-        self.atlas9_dir = atlas9_dir
+    def __init__(self, atlas9_dir: Path | str) -> None:
+        self.atlas9_dir = Path(atlas9_dir)
         self._grid: dict | None = None
 
     @classmethod
@@ -204,10 +204,29 @@ class AtmosphereGrid:
     # ------------------------------------------------------------------
 
     def _load_grid(self) -> None:
-        """Load grid from pickle, creating it from raw files if needed."""
+        """Load grid from pickle.
+
+        Search order:
+        1. atlas9_dir / ATLAS9_grid.pickle (user-provided or env var)
+        2. Bundled package data (ships with pip install)
+        3. Create from raw ATLAS9 grid files (legacy, requires 3.3 GB grids)
+        """
         pickle_path = self.atlas9_dir / "ATLAS9_grid.pickle"
 
         if not pickle_path.exists():
+            # Try bundled package data
+            try:
+                from importlib.resources import files
+                bundled = Path(str(files("species").joinpath("data", "ATLAS9_grid.pickle")))
+                if bundled.exists():
+                    pickle_path = bundled
+                    logger.info("Using bundled ATLAS9 grid pickle")
+            except Exception:
+                pass
+
+        if not pickle_path.exists():
+            # Last resort: create from raw grid files
+            pickle_path = self.atlas9_dir / "ATLAS9_grid.pickle"
             logger.info("Creating ATLAS9 grid pickle (one-time operation)...")
             self._create_grid_pickle(pickle_path)
 
