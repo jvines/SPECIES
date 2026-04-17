@@ -105,6 +105,12 @@ class Spectrum:
         wavelength, flux, snr, header_dict = reader(hdu_list, header0, path)
         hdu_list.close()
 
+        # Estimate SNR from continuum if not provided by the reader
+        if snr is None or (isinstance(snr, (int, float)) and snr == 0.0):
+            wave_1d = wavelength.flatten() if wavelength.ndim > 1 else wavelength
+            flux_1d = flux.flatten() if flux.ndim > 1 else flux
+            snr = compute_snr(wave_1d, flux_1d)
+
         return cls(
             wavelength=wavelength,
             flux=flux,
