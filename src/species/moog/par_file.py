@@ -143,7 +143,7 @@ def write_synth_par(
         f"flux/int      {flux_int}",
         f"damping       {damping}",
         f"freeform      {freeform}",
-        f"plot          {plot}",
+        f"plot          3",
     ])
 
     # Abundances block (must come before synlimits)
@@ -155,6 +155,17 @@ def write_synth_par(
     lines_out.append("isotopes      0  1")
     lines_out.append("synlimits")
     lines_out.append(f" {wave_start:.2f} {wave_end:.2f} {wave_step:.4f} {opacity_range:.1f}")
+
+    # MOOG requires obspectrum + plotpars to produce smoothed_out.
+    # plot 3 = write smoothed output to file.
+    # obspectrum 5 = no observed spectrum overlay.
+    # plotpars 1 = smoothing parameters follow (no extra smoothing;
+    # the caller applies vmac/vsini broadening in numpy).
+    lines_out.append("obspectrum    5")
+    lines_out.append("plotpars      1")
+    lines_out.append(f" {wave_start:.2f} {wave_end:.2f} 0.05 1.05")
+    lines_out.append(" 0.0000  0.0000  0.000  1.000")
+    lines_out.append(" gm  0.000  0.0  0.0  0.00  0.0")
 
     output_path.write_text("\n".join(lines_out) + "\n")
     return output_path
