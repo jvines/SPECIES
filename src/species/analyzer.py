@@ -192,18 +192,19 @@ class Analyzer:
             params.teff, params.logg, params.feh, params.vt, params.converged,
         )
 
-        # 5. Error propagation
+        # 5. Final MOOG run + error propagation
+        abfind = None
         errors: ParameterErrors | None = None
-        if self.config.compute_errors and params.converged:
-            logger.info("Computing parameter uncertainties")
-            # Re-run MOOG to get the final abfind result for error analysis
+        if params.converged:
             abfind = self.moog.run_abfind(
                 self._make_model(params),
                 moog_linelist_path,
                 read_mode=self.config.read_mode,
             )
-            stellar_class = "giant" if self.config.is_giant else "dwarf"
-            errors = compute_errors(params, abfind, stellar_class=stellar_class, hold=hold)
+            if self.config.compute_errors:
+                logger.info("Computing parameter uncertainties")
+                stellar_class = "giant" if self.config.is_giant else "dwarf"
+                errors = compute_errors(params, abfind, stellar_class=stellar_class, hold=hold)
 
         # 6. Chemical abundances
         abundances: dict[str, ElementAbundanceResult] = {}
@@ -258,6 +259,7 @@ class Analyzer:
             abundances=abundances,
             broadening=broadening,
             ew_results=ew_results,
+            abfind=abfind,
             metadata=metadata,
         )
 

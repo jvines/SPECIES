@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astro-species"
-version = "4.0.2"
+version = "4.0.3"
 description = "SPECtroscopic Inference of stEllar parameterS"
 readme = "README.md"
 license = "MIT"

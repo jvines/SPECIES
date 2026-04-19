@@ -16,6 +16,7 @@ import numpy as np
 from species.atmosphere import AtmosphericParameters
 from species.errors import ParameterErrors
 from species.ew import EWResult
+from species.moog import AbfindResult
 
 
 @dataclass
@@ -61,6 +62,7 @@ class AnalysisResult:
     abundances: dict[str, ElementAbundanceResult] = field(default_factory=dict)
     broadening: BroadeningResult | None = None
     ew_results: list[EWResult] | None = None
+    abfind: AbfindResult | None = None
     metadata: AnalysisMetadata = field(default_factory=AnalysisMetadata)
 
     def to_dict(self) -> dict[str, Any]:
