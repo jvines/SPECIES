@@ -32,7 +32,7 @@ from uncertainties import ufloat, umath
 
 from species.atmosphere import AtmosphericParameters
 from species.config import Settings
-from species.io.results import BroadeningResult
+from species.io.results import BroadeningLineData, BroadeningResult
 from species.moog.atmosphere_grid import AtmosphereGrid
 from species.moog.wrapper import MOOGError, MOOGRunner
 
@@ -121,6 +121,7 @@ class BroadeningFitter:
         # 3. For each diagnostic line, synthesize ONCE and fit vsini via grid search
         vsini_arr = np.zeros(len(_BROADENING_LINES))
         err_vsini_arr = np.zeros(len(_BROADENING_LINES))
+        per_line_data: list[BroadeningLineData] = []
 
         for i, line_info in enumerate(_BROADENING_LINES):
             wl = line_info["wave"]
@@ -141,12 +142,14 @@ class BroadeningFitter:
                 continue
 
             try:
-                vs, err_vs = self._fit_single_line(
+                vs, err_vs, line_data = self._fit_single_line(
                     wave_window, flux_norm, wl, params, vmac, snr, line_info,
                     model_path,
                 )
                 vsini_arr[i] = vs
                 err_vsini_arr[i] = err_vs
+                if line_data is not None:
+                    per_line_data.append(line_data)
                 logger.debug("Line %.2f: vsini=%.2f ± %.2f", wl, vs, err_vs)
             except Exception:
                 logger.debug("Line %.2f: vsini fit failed", wl, exc_info=True)
@@ -156,7 +159,9 @@ class BroadeningFitter:
             model_path.unlink(missing_ok=True)
 
         # 4. Combine results
-        return _combine_results(vsini_arr, err_vsini_arr, vmac_arr, err_vmac_arr)
+        result = _combine_results(vsini_arr, err_vsini_arr, vmac_arr, err_vmac_arr)
+        result.per_line = per_line_data
+        return result
 
     def _make_shared_model(self, params: AtmosphericParameters) -> Path | None:
         """Create a single atmosphere model file shared across all diagnostic lines."""
@@ -177,20 +182,20 @@ class BroadeningFitter:
         snr: float,
         line_info: dict,
         model_path: Path,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, BroadeningLineData | None]:
         """Fit vsini for a single diagnostic line via grid search.
 
         Synthesizes the unbroadened spectrum ONCE via MOOG, then applies
         rotational broadening at each vsini grid point in pure numpy.
 
-        Returns (vsini, error).
+        Returns (vsini, error, line_data).
         """
         # 1. Synthesize unbroadened spectrum ONCE
         synth_wave, synth_flux_raw = self._synthesize_unbroadened(
             model_path, line_center, line_info,
         )
         if synth_wave is None:
-            return 0.0, 0.0
+            return 0.0, 0.0, None
 
         # 2. Apply macroturbulence ONCE (same for all vsini)
         synth_flux_vmac = _apply_macroturbulence(synth_wave, synth_flux_raw, vmac, line_center)
@@ -224,7 +229,7 @@ class BroadeningFitter:
         # 4. Find minimum via spline interpolation
         valid = np.isfinite(chi2)
         if np.sum(valid) < 4:
-            return 0.0, 0.0
+            return 0.0, 0.0, None
 
         best_vsini = _find_spline_minimum(v_grid[valid], chi2[valid])
 
@@ -234,7 +239,25 @@ class BroadeningFitter:
             v_grid[valid], chi2[valid], n_trials=500,
         )
 
-        return best_vsini, err_vsini
+        # 6. Build best-fit synthetic spectrum for plots
+        if best_vsini > 0.5:
+            best_synth = pyasl.rotBroad(synth_wave, synth_flux_vmac, 0.0, best_vsini)
+        else:
+            best_synth = synth_flux_vmac
+
+        line_data = BroadeningLineData(
+            name=f"{line_info['name']} {line_center:.2f}",
+            wave_obs=wavelength,
+            flux_obs=flux_norm,
+            wave_synth=synth_wave,
+            flux_synth=best_synth,
+            v_grid=v_grid[valid],
+            chi2=chi2[valid],
+            vsini=best_vsini,
+            vmac=vmac,
+        )
+
+        return best_vsini, err_vsini, line_data
 
     def _get_synth_linelist(self) -> Path:
         """Create a MOOG-format linelist for synth mode from the vsini linelist.

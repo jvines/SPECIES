@@ -45,6 +45,26 @@ _LINE_WINDOW = 3.0
 # ---------------------------------------------------------------------------
 
 @dataclass
+class EWLineData:
+    """Intermediate fit data for a single line, used for diagnostic plots.
+
+    Stored on ``EWResult.line_data`` when the measurement succeeds.
+    Carries everything needed to reproduce the original SPECIES line-fit
+    plots (EWComputation.plot_lines).
+    """
+
+    wave: np.ndarray            # wavelength window
+    flux_norm: np.ndarray       # continuum-divided flux (absorption below 0)
+    flux_raw: np.ndarray        # raw flux before normalization
+    continuum: np.ndarray       # evaluated continuum polynomial
+    full_model: np.ndarray      # multi-Gaussian model evaluated on wave
+    detected_lines: np.ndarray  # absorption line centers found in window
+    gauss_params: tuple         # (amplitude, center, sigma) of target component
+    gauss_errors: tuple         # (err_a, err_m, err_s)
+    ew_dist: np.ndarray         # MC EW distribution (1000 samples)
+
+
+@dataclass
 class EWResult:
     """Equivalent width measurement for a single line."""
 
@@ -53,6 +73,7 @@ class EWResult:
     ew_median: float  # mA (50th percentile of MC distribution)
     ew_err_plus: float  # mA (84th - 50th percentile)
     ew_err_minus: float  # mA (50th - 16th percentile)
+    line_data: EWLineData | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -526,7 +547,7 @@ def _measure_single_line(
             logger.debug("Line %.2f not visible", line_wl)
             return zero
 
-        lw.normalize()
+        cont_poly = lw.normalize()
         if lw.flux_norm is None or np.all(np.isnan(lw.flux_norm)):
             return zero
 
@@ -618,12 +639,26 @@ def _measure_single_line(
             line_wl, comp.a, comp.m, comp.s, ew_value,
         )
 
+        # Build line data for diagnostic plots
+        line_data = EWLineData(
+            wave=lw.wave,
+            flux_norm=lw.flux_norm,
+            flux_raw=lw.flux,
+            continuum=cont_poly(lw.wave),
+            full_model=mg(lw.wave, *params),
+            detected_lines=detected,
+            gauss_params=(comp.a, comp.m, comp.s),
+            gauss_errors=(comp.err_a, comp.err_m, comp.err_s),
+            ew_dist=ew_dist,
+        )
+
         return EWResult(
             wavelength=line_wl,
             ew=ew_value,
             ew_median=p50,
             ew_err_plus=p84 - p50,
             ew_err_minus=p50 - p16,
+            line_data=line_data,
         )
 
     except Exception:

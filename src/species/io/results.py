@@ -20,6 +20,21 @@ from species.moog import AbfindResult
 
 
 @dataclass
+class BroadeningLineData:
+    """Per-line broadening fit data for diagnostic plots."""
+
+    name: str               # e.g. "FeI 6027.05"
+    wave_obs: np.ndarray    # observed wavelength window
+    flux_obs: np.ndarray    # observed normalized flux
+    wave_synth: np.ndarray  # synthetic wavelength
+    flux_synth: np.ndarray  # best-fit broadened synthetic flux
+    v_grid: np.ndarray      # vsini grid values
+    chi2: np.ndarray        # chi-squared at each grid point
+    vsini: float            # best-fit vsini for this line
+    vmac: float             # macroturbulence used
+
+
+@dataclass
 class BroadeningResult:
     """Broadening parameters (vsini, vmac)."""
 
@@ -27,6 +42,7 @@ class BroadeningResult:
     vsini_err: float = 0.0
     vmac: float = 0.0
     vmac_err: float = 0.0
+    per_line: list[BroadeningLineData] = field(default_factory=list)
 
 
 @dataclass
