@@ -83,6 +83,7 @@ class BroadeningFitter:
         params: AtmosphericParameters,
         ni_abundance: float = 0.0,
         ni_uncertainty: float = 0.1,
+        resolution: float = 0.0,
     ) -> BroadeningResult:
         """Determine vsini and vmac from line profile fitting.
 
@@ -100,6 +101,11 @@ class BroadeningFitter:
             Nickel abundance [Ni/H] (used for the NiI diagnostic line).
         ni_uncertainty
             Uncertainty in Ni abundance.
+        resolution
+            Resolving power R of the spectrograph. Convolved into the synthetic
+            spectrum as an instrumental Gaussian; without it the instrumental
+            width is absorbed into vsini. 0.0 means unknown, and reproduces the
+            previous behaviour.
 
         Returns
         -------
@@ -144,7 +150,7 @@ class BroadeningFitter:
             try:
                 vs, err_vs, line_data = self._fit_single_line(
                     wave_window, flux_norm, wl, params, vmac, snr, line_info,
-                    model_path,
+                    model_path, resolution,
                 )
                 vsini_arr[i] = vs
                 err_vsini_arr[i] = err_vs
@@ -182,6 +188,7 @@ class BroadeningFitter:
         snr: float,
         line_info: dict,
         model_path: Path,
+        resolution: float = 0.0,
     ) -> tuple[float, float, BroadeningLineData | None]:
         """Fit vsini for a single diagnostic line via grid search.
 
@@ -198,7 +205,9 @@ class BroadeningFitter:
             return 0.0, 0.0, None
 
         # 2. Apply macroturbulence ONCE (same for all vsini)
-        synth_flux_vmac = _apply_macroturbulence(synth_wave, synth_flux_raw, vmac, line_center)
+        synth_flux_vmac = _apply_macroturbulence(
+            synth_wave, synth_flux_raw, vmac, line_center, resolution,
+        )
 
         # 3. Grid search: apply rotational broadening at each vsini (pure numpy)
         v_grid = np.linspace(0.5, 25.0, 15)
@@ -386,12 +395,31 @@ def _apply_macroturbulence(
     flux: np.ndarray,
     vmac: float,
     line_center: float,
+    resolution: float = 0.0,
 ) -> np.ndarray:
-    """Apply macroturbulence broadening (Gaussian convolution)."""
-    if vmac <= 0.1:
-        return flux
+    """Apply macroturbulence and the instrumental profile in one convolution.
+
+    Both are Gaussians, so they add in quadrature and a single convolution does
+    the work of two, exactly.
+
+    The instrumental term used to be applied *nowhere*. MOOG's par file writes
+    ``gm 0.000`` -- no smoothing -- on the understanding that the caller
+    broadens in numpy, and the caller only ever applied vmac and vsini. The
+    instrumental width was therefore absorbed into the fitted vsini, making
+    vsini a property of the spectrograph as much as of the star: at R = 48000
+    the instrumental FWHM is ~6.2 km/s, comparable to a slow rotator's vsini.
+
+    ``resolution = 0.0`` reproduces the previous behaviour, for callers that
+    genuinely do not know R.
+    """
     c_kms = 299792.458
-    sigma_wl = vmac / c_kms * line_center
+    sigma_wl = (vmac / c_kms * line_center) if vmac > 0.1 else 0.0
+    if resolution and resolution > 0:
+        # FWHM = lambda / R;  sigma = FWHM / (2 sqrt(2 ln 2)).
+        sigma_inst = line_center / (resolution * 2.3548200450309493)
+        sigma_wl = float(np.hypot(sigma_wl, sigma_inst))
+    if sigma_wl <= 0.0:
+        return flux
     pixel_scale = np.mean(np.diff(wavelength)) if len(wavelength) > 1 else 0.02
     sigma_pix = sigma_wl / pixel_scale
     if sigma_pix > 0.5:

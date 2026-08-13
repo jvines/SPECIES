@@ -106,7 +106,9 @@ def write_grid_netcdf(grid: dict, path: Path | str, *, complevel: int = 4) -> Pa
             chunksizes=(1, logg.size, feh.size, n_layers, N_COLUMNS),
             fill_value=np.nan,
         )
-        var[:] = cube
+        # `var[...]` rather than `var[:]`: the latter makes netCDF4 reshape the
+        # array in place, which NumPy 2.5 deprecates.
+        var[...] = cube
         var.column_names = ",".join(COLUMN_NAMES)
 
     logger.info("wrote ATLAS9 grid to %s (%.1f MB)", path, path.stat().st_size / 1e6)
