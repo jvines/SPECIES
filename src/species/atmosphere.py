@@ -625,13 +625,25 @@ class AtmosphereFitter:
     # Max step per iteration (trust region)
     _MAX_STEPS = np.array([500.0, 0.5, 0.3, 0.5])
 
-    # Parameter bounds
+    # Parameter bounds.
+    #
+    # NOTE these disagree with _ConvergenceState.DEFAULT_BOUNDS, which the
+    # per-parameter method uses: [Fe/H] is (-4.0, 0.6) here against (-3.0, 1.0)
+    # there, and vt (0.1, 5.0) against (0.0, 5.0). Two methods on the same class
+    # therefore search different spaces. Left as-is rather than unified in this
+    # pass, because changing a bound moves published numbers and that deserves
+    # its own change with its own validation.
     _BOUNDS = np.array([
         [3500.0, 9000.0],  # Teff
         [0.5, 4.9],        # logg
         [-4.0, 0.6],       # [Fe/H]
         [0.1, 5.0],        # vt
     ])
+
+    # The solver's parameter vector is [Teff, logg, [Fe/H], vt] -- note this is
+    # NOT the order of `initial`, which is (feh, teff, logg, vt). Named here so
+    # `hold` can be mapped onto vector positions without re-deriving it.
+    _SOLVER_PARAM_ORDER = ("temperature", "gravity", "metallicity", "velocity")
 
     def _fit_broyden(
         self,
@@ -657,6 +669,22 @@ class AtmosphereFitter:
         n_calls = 0
         last_result: AbfindResult | None = None
 
+        # `hold` was accepted here and never used, while compute_errors DID
+        # honour it -- so hold=["gravity"] returned a freely fitted log g
+        # wearing the uncertainty of a held one. A fabricated error bar in an
+        # output table is worse than a missing feature.
+        #
+        # Each residual pairs with exactly one parameter (EP slope <-> Teff,
+        # Fe I - Fe II <-> log g, abundance consistency <-> [Fe/H], RW slope
+        # <-> vt), so holding a parameter drops its residual too and the system
+        # stays square.
+        free = np.array([name not in hold for name in self._SOLVER_PARAM_ORDER])
+        idx = np.where(free)[0]
+        if idx.size == 0:
+            raise ValueError("every parameter is held; there is nothing to solve")
+        if idx.size < 4:
+            logger.info("Broyden: holding %s", ", ".join(sorted(hold)))
+
         with self.moog.open_session(linelist_path) as session:
             def moog_func(p: np.ndarray) -> tuple[np.ndarray, AbfindResult | None]:
                 """Evaluate the 4 diagnostics at parameter vector p."""
@@ -678,7 +706,7 @@ class AtmosphereFitter:
             # Initial evaluation
             f0, last_result = moog_func(params)
             n_calls += 1
-            quadr = np.linalg.norm(f0)
+            quadr = np.linalg.norm(f0[idx])
 
             # Convergence threshold: L2 norm of 4 residuals. Each residual
             # should be < tol (0.001), so ||f|| < sqrt(4)*tol ≈ 0.002. Use 0.005
@@ -689,8 +717,8 @@ class AtmosphereFitter:
                 return self._broyden_result(params, last_result, True, n_calls, "broyden")
 
             # Compute initial Jacobian via finite differences (4 extra calls)
-            J = np.zeros((4, 4))
-            for j in range(4):
+            J = np.eye(4)
+            for j in idx:
                 p_pert = params.copy()
                 p_pert[j] += self._FD_STEPS[j]
                 p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
@@ -713,7 +741,8 @@ class AtmosphereFitter:
             for iteration in range(1, 30):
                 # Solve J @ delta = -f
                 try:
-                    delta = -np.linalg.solve(J, f0)
+                    delta = np.zeros(4)
+                    delta[idx] = -np.linalg.solve(J[np.ix_(idx, idx)], f0[idx])
                 except np.linalg.LinAlgError:
                     logger.warning("Singular Jacobian at iteration %d", iteration)
                     break
@@ -734,18 +763,21 @@ class AtmosphereFitter:
                 if result_new is not None:
                     last_result = result_new
 
-                new_quadr = np.linalg.norm(f_new)
+                new_quadr = np.linalg.norm(f_new[idx])
                 logger.info(
                     "Broyden %2d: ||f||=%.4f T=%.0f logg=%.3f feh=%.4f vt=%.4f (%d calls)",
                     iteration, new_quadr, *params_new, n_calls,
                 )
 
                 # Broyden rank-1 update
-                actual_dx = params_new - params
-                actual_df = f_new - f0
+                actual_dx = (params_new - params)[idx]
+                actual_df = (f_new - f0)[idx]
                 denom = actual_dx @ actual_dx
                 if denom > 1e-30:
-                    J = J + np.outer(actual_df - J @ actual_dx, actual_dx) / denom
+                    Jff = J[np.ix_(idx, idx)]
+                    J[np.ix_(idx, idx)] = Jff + np.outer(
+                        actual_df - Jff @ actual_dx, actual_dx
+                    ) / denom
 
                 params = params_new
                 prev_quadr = quadr
@@ -765,7 +797,7 @@ class AtmosphereFitter:
                     stagnation += 1
                     if stagnation >= 3:
                         logger.warning("Broyden stagnated, resetting Jacobian")
-                        for j in range(4):
+                        for j in idx:
                             p_pert = params.copy()
                             p_pert[j] += self._FD_STEPS[j]
                             p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])

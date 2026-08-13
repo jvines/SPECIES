@@ -62,7 +62,7 @@ def test_task_tuple_is_picklable(tmp_path):
         if v is not None
     }
     task = (_toy_spectrum(), str(tmp_path / "star"), config_dict, {})
-    spec, star_dir, cfg, kwargs = pickle.loads(pickle.dumps(task))
+    spec, _star_dir, cfg, _kwargs = pickle.loads(pickle.dumps(task))
     assert spec.rv == 12.5
     assert Settings(**cfg) is not None
 
