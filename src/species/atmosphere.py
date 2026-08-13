@@ -817,22 +817,58 @@ class AtmosphereFitter:
         from scipy.optimize import minimize
 
         feh0, teff0, logg0, vt0 = initial
+        bounds = dict(_ConvergenceState.DEFAULT_BOUNDS)
+        if boundaries:
+            bounds.update(boundaries)
+        feh_lo, feh_hi = bounds["metallicity"]
+
+        # The simplex searches (Teff, log g, vt); [Fe/H] is not a free direction,
+        # it is a FIXED POINT of the model at each trial point -- the classical
+        # condition that the mean Fe I abundance equal the model metallicity.
+        #
+        # This method used to read `feh = feh0  # Updated below` and never update
+        # it, so every MOOG call ran at the caller's starting metallicity (0.0 by
+        # default) and the abundance residual `ab` was computed and then dropped
+        # from the objective entirely. Three of the four classical conditions
+        # were solved at a metallicity that was usually wrong, and the [Fe/H]
+        # finally reported came from a single post-hoc run that was never fed
+        # back. For a metal-poor star the error propagates into log g through the
+        # ionisation balance, and it does so in the shape -- near zero at solar,
+        # growing with |[Fe/H]| -- that is otherwise the signature of real
+        # physics.
+        def solve_feh(teff, logg, vt, feh_start):
+            """Iterate [Fe/H] to its fixed point at fixed (Teff, log g, vt)."""
+            feh = float(np.clip(feh_start, feh_lo, feh_hi))
+            result = None
+            for _ in range(50):
+                result = self._run_moog(teff, logg, feh, vt, linelist_path)
+                if result is None:
+                    return None, feh
+                ab = result.fe_i_abundance - self.config.fe_solar
+                if abs(ab - feh) <= self.config.tolerance.ab:
+                    return result, feh
+                feh = float(np.clip(ab, feh_lo, feh_hi))
+            return result, feh
+
+        # Carried between objective evaluations so each trial starts from the
+        # previous fixed point rather than from feh0; the simplex takes small
+        # steps, so this converges in one or two MOOG calls after the first.
+        feh_state = {"value": feh0}
 
         def objective(x: np.ndarray) -> float:
             teff, logg, vt = x
-            feh = feh0  # Updated below
-
-            result = self._run_moog(teff, logg, feh, vt, linelist_path)
+            result, feh = solve_feh(teff, logg, vt, feh_state["value"])
             if result is None:
                 return 1e10
+            feh_state["value"] = feh
 
-            ab = result.fe_i_abundance - self.config.fe_solar
             ep = result.ep_slope
             dif = result.fe_i_fe_ii_diff
             rw = result.rw_slope
 
-            # Objective: minimize weighted sum of squared residuals
-            # Weights from original: 5*((3.5*ep)^2 + (1.3*rw)^2) + 2*(dif)^2
+            # Weights from the original: 5*((3.5*ep)^2 + (1.3*rw)^2) + 2*(dif)^2.
+            # The abundance condition is absent on purpose -- solve_feh has
+            # already driven it to zero, so including it would double-count.
             return 5.0 * ((3.5 * ep) ** 2 + (1.3 * rw) ** 2) + 2.0 * dif ** 2
 
         x0 = np.array([teff0, logg0, vt0])
@@ -840,9 +876,8 @@ class AtmosphereFitter:
                        options={"maxiter": 10000, "xatol": 1.0, "fatol": 1e-6})
 
         teff, logg, vt = res.x
-        # Final MOOG run to get the actual parameters
-        result = self._run_moog(teff, logg, feh0, vt, linelist_path)
-        feh = (result.fe_i_abundance - self.config.fe_solar) if result else feh0
+        # Final run at the converged point, with [Fe/H] again a fixed point.
+        result, feh = solve_feh(teff, logg, vt, feh_state["value"])
 
         return AtmosphericParameters(
             teff=float(teff), logg=float(logg), feh=float(feh), vt=float(vt),
