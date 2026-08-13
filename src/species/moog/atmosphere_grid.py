@@ -8,13 +8,14 @@ atmosphere model files for arbitrary (Teff, logg, [Fe/H]).
 from __future__ import annotations
 
 import logging
-import pickle
 import re
 from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
 from scipy.interpolate import griddata, LinearNDInterpolator
+
+from species.moog.grid_io import read_grid_netcdf, write_grid_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ _MOOG_MOLECULES = (
 class AtmosphereGrid:
     """Lazy-loaded ATLAS9 atmosphere model grid.
 
-    The grid is loaded from a pickle file on first access. If the pickle
-    does not exist, it is created from the raw ATLAS9 grid files.
+    The grid is loaded from a NetCDF file on first access. If it does not
+    exist, it is built from the raw ATLAS9 grid files.
 
     Usage::
 
@@ -203,43 +204,49 @@ class AtmosphereGrid:
     # Grid loading
     # ------------------------------------------------------------------
 
+    GRID_FILENAME = "ATLAS9_grid.nc"
+
     def _load_grid(self) -> None:
-        """Load grid from pickle.
+        """Load the grid from NetCDF.
 
         Search order:
-        1. atlas9_dir / ATLAS9_grid.pickle (user-provided or env var)
+        1. ``atlas9_dir / ATLAS9_grid.nc`` (user-provided or env var)
         2. Bundled package data (ships with pip install)
-        3. Create from raw ATLAS9 grid files (legacy, requires 3.3 GB grids)
-        """
-        pickle_path = self.atlas9_dir / "ATLAS9_grid.pickle"
+        3. Build from the raw ATLAS9 grid files (legacy, needs the 3.3 GB grids)
 
-        if not pickle_path.exists():
-            # Try bundled package data
+        The grid used to ship as a pickle and no longer does; a pickle is not
+        read at all any more. An unversioned format that executes arbitrary code
+        on load has no business being the distribution channel for a 34 MB data
+        product. The NetCDF file holds identical numbers in 13 MB, because
+        slightly over half the cube is NaN -- combinations such as Teff = 15000 K
+        at log g = 0 have no ATLAS9 model -- and those blocks compress away.
+        """
+        grid_path = self.atlas9_dir / self.GRID_FILENAME
+
+        if not grid_path.exists():
             try:
                 from importlib.resources import files
-                bundled = Path(str(files("species").joinpath("data", "ATLAS9_grid.pickle")))
+                bundled = Path(str(files("species").joinpath("data", self.GRID_FILENAME)))
                 if bundled.exists():
-                    pickle_path = bundled
-                    logger.info("Using bundled ATLAS9 grid pickle")
+                    grid_path = bundled
+                    logger.info("Using bundled ATLAS9 grid")
             except Exception:
                 pass
 
-        if not pickle_path.exists():
-            # Last resort: create from raw grid files
-            pickle_path = self.atlas9_dir / "ATLAS9_grid.pickle"
-            logger.info("Creating ATLAS9 grid pickle (one-time operation)...")
-            self._create_grid_pickle(pickle_path)
+        if not grid_path.exists():
+            grid_path = self.atlas9_dir / self.GRID_FILENAME
+            logger.info("Building ATLAS9 grid from raw models (one-time operation)...")
+            self._create_grid(grid_path)
 
-        with open(pickle_path, "rb") as f:
-            self._grid = pickle.load(f)
-
+        self._grid = read_grid_netcdf(grid_path)
+        n_models = int(np.isfinite(self._grid["col0"][:, 0]).sum())
         logger.info(
-            "Loaded ATLAS9 grid: %d points",
-            len(self._grid["tgrid"]),
+            "Loaded ATLAS9 grid: %d nodes, %d with models, %d empty",
+            len(self._grid["tgrid"]), n_models, len(self._grid["tgrid"]) - n_models,
         )
 
-    def _create_grid_pickle(self, pickle_path: Path) -> None:
-        """Build the grid pickle from raw ATLAS9 model files.
+    def _create_grid(self, grid_path: Path) -> None:
+        """Build the grid from raw ATLAS9 model files and write it as NetCDF.
 
         Ported from AtmosGrid.create_grid_file().
         """
@@ -300,11 +307,8 @@ class AtmosphereGrid:
         for key, values in cols.items():
             grid_data[key] = np.array(values)
 
-        pickle_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(pickle_path, "wb") as f:
-            pickle.dump(grid_data, f)
-
-        logger.info("Created ATLAS9 grid pickle at %s", pickle_path)
+        write_grid_netcdf(grid_data, grid_path)
+        logger.info("Created ATLAS9 grid at %s", grid_path)
 
 
 # ---------------------------------------------------------------------------

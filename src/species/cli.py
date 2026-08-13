@@ -368,14 +368,25 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print()
 
     # Check ATLAS9 grids
+    from species.moog.atmosphere_grid import AtmosphereGrid
+
     grid_dir = config.atlas9_dir
-    pickle_path = grid_dir / "ATLAS9_grid.pickle"
+    grid_path = grid_dir / AtmosphereGrid.GRID_FILENAME
     grids_dir = grid_dir / "grids"
-    if pickle_path.exists():
-        size_mb = pickle_path.stat().st_size / 1e6
-        print(f"  ATLAS9 grid:     {pickle_path} ({size_mb:.0f} MB)")
+    if not grid_path.exists():
+        # The bundled copy is what a pip install actually resolves to.
+        try:
+            from importlib.resources import files
+            bundled = Path(str(files("species").joinpath("data", AtmosphereGrid.GRID_FILENAME)))
+            if bundled.exists():
+                grid_path = bundled
+        except Exception:
+            pass
+    if grid_path.exists():
+        size_mb = grid_path.stat().st_size / 1e6
+        print(f"  ATLAS9 grid:     {grid_path} ({size_mb:.0f} MB)")
     elif grids_dir.exists():
-        print(f"  ATLAS9 grid:     {grids_dir} (raw files, pickle will be created on first run)")
+        print(f"  ATLAS9 grid:     {grids_dir} (raw files; the .nc grid is built on first run)")
     else:
         print(f"  ATLAS9 grid:     NOT FOUND at {grid_dir}")
         print(f"                   Set SPECIES_ATLAS9_DIR to the directory containing grids/")

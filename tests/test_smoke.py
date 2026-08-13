@@ -46,8 +46,14 @@ class TestImports:
     """Verify all modules import cleanly."""
 
     def test_top_level_import(self):
+        # Asserting a literal is what let the version drift three ways without
+        # anyone noticing. Assert the invariant instead: the package reports
+        # whatever its own distribution metadata declares.
+        from importlib.metadata import version
+
         from species import __version__
-        assert __version__ == "4.0.0a1"
+
+        assert __version__ == version("astro-species")
 
     def test_lazy_imports(self):
         from species import Spectrum, Analyzer, Settings
