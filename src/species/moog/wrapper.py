@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 
 from species.moog.par_file import write_abfind_par, write_synth_par
 from species.moog.parser import AbfindResult, parse_abfind_output
@@ -249,17 +250,41 @@ class MOOGRunner:
                 proc.stderr[:500] if proc.stderr else "(empty)",
             )
 
-    def _link_support_files(self, run_dir: Path) -> None:
-        """Symlink MOOG support files into the run directory."""
-        if self.moog_data_dir is None:
-            return
+    # Warn once per process, not once per MOOG call — the solver makes hundreds.
+    _warned_missing_support: ClassVar[bool] = False
 
-        for fname in self._SUPPORT_FILES:
-            src = self.moog_data_dir / fname
-            if src.exists():
-                dst = run_dir / fname
-                if not dst.exists():
-                    dst.symlink_to(src)
+    def _link_support_files(self, run_dir: Path) -> None:
+        """Symlink MOOG support files into the run directory.
+
+        Missing files are announced rather than ignored. Without Barklem.dat
+        MOOG does not fail: it silently falls back to the Unsold approximation
+        for van der Waals broadening, which shifts A(Fe) by roughly 0.04 dex.
+        That is a real abundance offset arriving with no error, no warning and
+        no trace in the output, and it is exactly what an unset or
+        wrongly-pointed ``moog_data_dir`` produces.
+        """
+        missing = []
+        if self.moog_data_dir is None:
+            missing = list(self._SUPPORT_FILES)
+        else:
+            for fname in self._SUPPORT_FILES:
+                src = self.moog_data_dir / fname
+                if src.exists():
+                    dst = run_dir / fname
+                    if not dst.exists():
+                        dst.symlink_to(src)
+                else:
+                    missing.append(fname)
+
+        if missing and not MOOGRunner._warned_missing_support:
+            MOOGRunner._warned_missing_support = True
+            logger.warning(
+                "MOOG support files not found (%s) in moog_data_dir=%s. MOOG will "
+                "fall back to Unsold van der Waals damping, shifting A(Fe) by "
+                "~0.04 dex with no other indication. Set SPECIES_MOOG_DATA_DIR "
+                "to the directory containing them.",
+                ", ".join(missing), self.moog_data_dir,
+            )
 
     def open_session(self, linelist_path: Path) -> MOOGSession:
         """Create a persistent working directory for a sequence of MOOG calls.
