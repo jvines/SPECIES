@@ -1,0 +1,3 @@
+┌ Warning: Failed to converge after 10 iterations.  Returning the current guess.
+└ @ Korg.Fit /depot/packages/Korg/XvH45/src/Fit/fit_via_EWs.jl:507
+wrote /species/tests/data/korg_out.json

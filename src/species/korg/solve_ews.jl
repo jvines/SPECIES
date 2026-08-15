@@ -24,7 +24,11 @@
 
 using Pkg
 using KLOTHO
-import KLOTHO: solve_with_covariance
+# railed_parameters is public-but-unexported in KLOTHO. Julia resolves names at
+# call time, so omitting it here let the whole solve run and then die while
+# assembling the result -- minutes of Korg synthesis thrown away for a missing
+# import. `preflight()` below touches every such symbol before any work starts.
+import KLOTHO: solve_with_covariance, railed_parameters
 using DelimitedFiles
 using LinearAlgebra
 using JSON3
@@ -75,6 +79,12 @@ function read_moog_ew_linelist(path::AbstractString)
 end
 
 function main()
+    # Touch the symbols the result-assembly path needs, before any solving.
+    # Julia resolves names at call time, so a missing import there costs a full
+    # Korg solve before it surfaces -- which is what happened with
+    # `railed_parameters`. Seconds here instead of minutes.
+    railed_parameters([5777.0, 4.44, 1.0, 0.0])
+
     length(ARGS) >= 2 || error("usage: solve_ews.jl <linelist.txt> <out.json> [key=value ...]")
     linelist_path, out_path = ARGS[1], ARGS[2]
     o = parse_opts(ARGS[3:end])
