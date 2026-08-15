@@ -162,6 +162,9 @@ class Analyzer:
             spec_1d.snr,
             self.config.linelist_path,
             output_dir=self.output_dir,
+            resolution=self.spectrum.resolving_power,
+            vsini=self._overrides.get("vsini", 0.0),
+            vmac=self._overrides.get("vmac", 0.0),
         )
 
         valid_ew = [r for r in ew_results if r.is_valid]
