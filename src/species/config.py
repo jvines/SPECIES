@@ -15,7 +15,6 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
-
 # ---------------------------------------------------------------------------
 # Science dataclasses (ported from Atmos.py)
 # ---------------------------------------------------------------------------
@@ -88,6 +87,20 @@ class Settings(BaseSettings):
     output_dir: Path = Field(
         default=Path("./output"),
         description="Base directory for analysis output.",
+    )
+
+    # Korg + MARCS second engine. Entirely optional: without a Julia install and
+    # a project carrying KLOTHO, SPECIES runs on MOOG + ATLAS9 exactly as before.
+    korg_project: Path | None = Field(
+        default=None,
+        description=(
+            "Julia project with KLOTHO available, enabling the Korg + MARCS "
+            "engine. Unset disables it."
+        ),
+    )
+    julia_binary: str = Field(
+        default="julia",
+        description="Julia executable used for the Korg engine.",
     )
 
     # Bundled data — resolved from package if not overridden

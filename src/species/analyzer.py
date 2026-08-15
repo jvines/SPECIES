@@ -19,6 +19,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -210,6 +211,13 @@ class Analyzer:
             params.teff, params.logg, params.feh, params.vt, params.converged,
         )
 
+        # 4b. Second engine: the same equivalent widths, solved with Korg +
+        # MARCS instead of MOOG + ATLAS9. Both consume moog_linelist_path
+        # unchanged, so the difference between them is radiative transfer and
+        # atmosphere grid rather than measurement. Off unless a Julia project is
+        # configured; a failure here never touches the primary result.
+        korg = self._run_korg_engine(moog_linelist_path, initial, hold)
+
         # 5. Final MOOG run + error propagation
         abfind = None
         errors: ParameterErrors | None = None
@@ -288,6 +296,7 @@ class Analyzer:
             ew_results=ew_results,
             abfind=abfind,
             metadata=metadata,
+            korg=korg,
         )
 
     # ------------------------------------------------------------------
@@ -423,6 +432,45 @@ class Analyzer:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _run_korg_engine(
+        self,
+        moog_linelist_path: Path,
+        initial: tuple[float, float, float, float] | None,
+        hold: list[str],
+    ):
+        """Solve the same EWs with Korg + MARCS, if it is configured.
+
+        Returns a ``KorgResult`` or ``None``. Never raises: the Korg engine is
+        an addition, and a missing Julia install or a failed solve must not cost
+        the caller the MOOG result they came for.
+        """
+        if not (self.config.korg_project or os.environ.get("SPECIES_KORG_PROJECT")):
+            return None
+        try:
+            from species.korg import KorgFitter
+
+            fitter = KorgFitter(self.config)
+            ok, why = fitter.available()
+            if not ok:
+                logger.info("Korg engine not available: %s", why)
+                return None
+            fitter.fit(moog_linelist_path, initial_params=initial, hold=hold)
+            result = fitter.last_result
+            if result is not None and result.is_measurement:
+                p = result.params
+                logger.info(
+                    "Korg: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f  "
+                    "rho(Teff,[Fe/H])=%.2f",
+                    p.teff, p.logg, p.feh, p.vt,
+                    result.correlation("teff", "feh"),
+                )
+            elif result is not None:
+                logger.info("Korg engine returned :%s", result.retcode)
+            return result
+        except Exception:
+            logger.warning("Korg engine failed; continuing with MOOG", exc_info=True)
+            return None
 
     def _make_model(self, params: AtmosphericParameters) -> Path:
         """Create a temporary atmosphere model file for given parameters."""

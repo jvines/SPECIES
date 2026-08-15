@@ -7,7 +7,7 @@ ASCII, and FITS formats.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +80,10 @@ class AnalysisResult:
     ew_results: list[EWResult] | None = None
     abfind: AbfindResult | None = None
     metadata: AnalysisMetadata = field(default_factory=AnalysisMetadata)
+    # Korg + MARCS solved from the SAME equivalent widths, when that engine is
+    # configured. `None` means it did not run. Typed loosely to keep the
+    # optional Julia dependency out of this module's imports.
+    korg: object | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Flat dictionary suitable for database storage or JSON serialization."""
