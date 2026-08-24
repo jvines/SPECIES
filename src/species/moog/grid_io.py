@@ -106,8 +106,11 @@ def write_grid_netcdf(grid: dict, path: Path | str, *, complevel: int = 4) -> Pa
             chunksizes=(1, logg.size, feh.size, n_layers, N_COLUMNS),
             fill_value=np.nan,
         )
-        # `var[...]` rather than `var[:]`: the latter makes netCDF4 reshape the
-        # array in place, which NumPy 2.5 deprecates.
+        # netCDF4 1.7.4 sets .shape on the array inside its own __setitem__,
+        # which NumPy 2.5 deprecates. Both `var[...]` and `var[:]` trigger it
+        # identically -- there is no spelling of this assignment that avoids it
+        # from here. Writer-only, so the shipped grid and every read path are
+        # unaffected; revisit when netCDF4 releases a fix.
         var[...] = cube
         var.column_names = ",".join(COLUMN_NAMES)
 
