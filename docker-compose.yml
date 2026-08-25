@@ -1,0 +1,18 @@
+services:
+  python:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: species-py:dev
+    working_dir: /work
+    volumes:
+      - .:/work
+      # Read-only view of the spectra archive for end-to-end runs.
+      - ${SPECTRA_DIR:-/home/jayvains/astronomy_data/spectra}:/data/spectra:ro
+    environment:
+      PYTHONPATH: /work/src
+    # Ceiling so a runaway MOOG or grid interpolation cannot take the host down.
+    mem_limit: 8g
+    stdin_open: true
+    tty: true
+    command: bash

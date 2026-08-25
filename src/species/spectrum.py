@@ -28,6 +28,28 @@ from species.ccf import (
 
 logger = logging.getLogger(__name__)
 
+# Nominal resolving power per spectrograph, standard configurations.
+#
+# UVES and HIRES are settable: their true R depends on the slit or decker
+# actually used, so treat those as defaults to override, not as facts about a
+# given file. Getting R wrong feeds straight into vsini and vmac.
+INSTRUMENT_RESOLUTION: dict[str, float] = {
+    "HARPS": 115_000.0,
+    "HARPS-N": 115_000.0,
+    "ESPRESSO": 140_000.0,      # HR mode
+    "CORALIE": 60_000.0,
+    "FEROS": 48_000.0,
+    "PFS": 80_000.0,
+    "NRES": 53_000.0,
+    "UVES": 40_000.0,           # settable — override per setup
+    "HIRES": 50_000.0,          # settable — override per decker
+}
+
+
+def instrument_resolution(instrument: str) -> float:
+    """Nominal resolving power for a known spectrograph, or 0.0 if unknown."""
+    return INSTRUMENT_RESOLUTION.get(str(instrument).strip().upper(), 0.0)
+
 
 # ---------------------------------------------------------------------------
 # Core data container
@@ -65,6 +87,21 @@ class Spectrum:
     rv: float | None = None
     header: dict = field(default_factory=dict)
     ccf_result: CCFResult | None = None
+    resolution: float | None = None
+
+    @property
+    def resolving_power(self) -> float:
+        """Resolving power R = lambda / delta-lambda, or 0.0 if unknown.
+
+        An explicit ``resolution`` wins; otherwise it is looked up from the
+        instrument name. This exists because the instrumental profile has to be
+        convolved into the synthetic spectrum before any line width is measured.
+        Without it the instrumental broadening is absorbed into vsini, and vsini
+        becomes a property of the spectrograph rather than of the star.
+        """
+        if self.resolution and self.resolution > 0:
+            return float(self.resolution)
+        return instrument_resolution(self.instrument)
 
     # ------------------------------------------------------------------
     # Constructors

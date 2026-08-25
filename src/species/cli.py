@@ -298,26 +298,84 @@ def _cmd_install_moog(args: argparse.Namespace) -> int:
         print("Check the compiler output with: species install-moog -v")
         return 1
 
-    # Verify it runs
-    print("Verifying MOOG binary...")
-    try:
-        proc = subprocess.run(
-            [str(moogsilent)],
-            input="\n\n",
-            capture_output=True, text=True,
-            timeout=5,
-        )
-        if "MOOG" in proc.stdout:
-            print("MOOG binary works.")
-        else:
-            print("Warning: MOOG binary ran but output was unexpected.")
-    except Exception as e:
-        print(f"Warning: could not verify MOOG binary: {e}")
+    # Verify it computes, not merely that it starts.
+    #
+    # This used to run the binary with empty input and check that the string
+    # "MOOG" appeared in stdout -- i.e. that it printed its own banner. That
+    # passes for an installation whose support files are missing, which is the
+    # dangerous case: MOOG then falls back to Unsold van der Waals damping and
+    # returns abundances shifted by ~0.04 dex, silently. A banner cannot tell
+    # you that; an abundance can.
+    print("Verifying MOOG produces abundances...")
+    ok_run, detail = _verify_moog_computes(moogsilent, prefix)
+    if ok_run:
+        print(f"MOOG works: {detail}")
+    else:
+        print(f"Warning: MOOG did not produce a usable abundance ({detail}).")
+        print("The binary may still start and print its banner while returning")
+        print("wrong numbers. Investigate before running science with it.")
 
     print()
     print(f"MOOG installed at {moogsilent}")
     _print_config_hint(prefix)
     return 0
+
+
+def _verify_moog_computes(moogsilent: Path, data_dir: Path) -> tuple[bool, str]:
+    """Run a real abfind and check MOOG returns a plausible Fe abundance.
+
+    Interpolates a solar atmosphere from the bundled grid, feeds MOOG three
+    Fe I lines with hand-set equivalent widths, and requires an answer in the
+    range a solar model must give. This is deliberately a *value* check: an
+    installation with missing support files starts fine, prints its banner, and
+    returns abundances offset by ~0.04 dex.
+
+    Returns (ok, human-readable detail).
+    """
+    import tempfile
+
+    from species.moog.atmosphere_grid import AtmosphereGrid
+    from species.moog.wrapper import MOOGError, MOOGRunner
+
+    # Three clean, unblended Fe I lines with EWs typical of the solar spectrum.
+    lines = (
+        # wavelength, species, excitation potential, log gf, EW (mA)
+        (6027.050, 26.0, 4.076, -1.09, 63.0),
+        (6151.618, 26.0, 2.176, -3.30, 51.0),
+        (6165.360, 26.0, 4.143, -1.46, 45.0),
+    )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="species_verify_") as tmp:
+            tmpdir = Path(tmp)
+            model = tmpdir / "solar.atm"
+            grid = AtmosphereGrid.get(data_dir)
+            if not grid.interpolate_and_write(5777.0, 4.44, 0.0, 1.0, model):
+                return False, "could not interpolate a solar atmosphere"
+
+            linelist = tmpdir / "lines.dat"
+            linelist.write_text(
+                "solar verification lines\n"
+                + "".join(
+                    f"{wl:10.3f}{sp:10.1f}{ep:10.3f}{gf:10.3f}"
+                    f"{'':10}{'':10}{ew:10.1f}\n"
+                    for wl, sp, ep, gf, ew in lines
+                )
+            )
+
+            runner = MOOGRunner(moog_binary=str(moogsilent), moog_data_dir=data_dir)
+            result = runner.run_abfind(model, linelist)
+    except (MOOGError, OSError, ValueError) as e:
+        return False, f"{type(e).__name__}: {e}"
+
+    a_fe = getattr(result, "fe_i_abundance", None)
+    if a_fe is None or not (a_fe == a_fe):        # None or NaN
+        return False, "no Fe I abundance in the output"
+    # A solar model with solar EWs must land near the solar iron abundance.
+    # Wide on purpose: this is an installation check, not a calibration.
+    if not (6.8 <= a_fe < 8.2):
+        return False, f"A(Fe I) = {a_fe:.3f}, outside the plausible solar range"
+    return True, f"A(Fe I) = {a_fe:.3f} from {result.n_fe_i} solar Fe I lines"
 
 
 def _print_config_hint(prefix: Path) -> None:
@@ -368,14 +426,25 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print()
 
     # Check ATLAS9 grids
+    from species.moog.atmosphere_grid import AtmosphereGrid
+
     grid_dir = config.atlas9_dir
-    pickle_path = grid_dir / "ATLAS9_grid.pickle"
+    grid_path = grid_dir / AtmosphereGrid.GRID_FILENAME
     grids_dir = grid_dir / "grids"
-    if pickle_path.exists():
-        size_mb = pickle_path.stat().st_size / 1e6
-        print(f"  ATLAS9 grid:     {pickle_path} ({size_mb:.0f} MB)")
+    if not grid_path.exists():
+        # The bundled copy is what a pip install actually resolves to.
+        try:
+            from importlib.resources import files
+            bundled = Path(str(files("species").joinpath("data", AtmosphereGrid.GRID_FILENAME)))
+            if bundled.exists():
+                grid_path = bundled
+        except Exception:
+            pass
+    if grid_path.exists():
+        size_mb = grid_path.stat().st_size / 1e6
+        print(f"  ATLAS9 grid:     {grid_path} ({size_mb:.0f} MB)")
     elif grids_dir.exists():
-        print(f"  ATLAS9 grid:     {grids_dir} (raw files, pickle will be created on first run)")
+        print(f"  ATLAS9 grid:     {grids_dir} (raw files; the .nc grid is built on first run)")
     else:
         print(f"  ATLAS9 grid:     NOT FOUND at {grid_dir}")
         print(f"                   Set SPECIES_ATLAS9_DIR to the directory containing grids/")

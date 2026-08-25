@@ -17,5 +17,7 @@ build/
 htmlcov/
 .coverage
 
-# Raw ATLAS9 grids (pickle is bundled, raw files not needed)
+# Raw ATLAS9 grids (the .nc grid is bundled; raw files not needed)
 atm_models/
+tests/data/korg_out.json
+tests/data/korg_run.log

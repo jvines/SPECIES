@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [master, "release/**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Per-run workspace keyed by run ID so concurrent PRs never share a checkout.
+  CI_DIR: /home/jayvains/ci-runs/species-${{ github.run_id }}
+
+jobs:
+  ci:
+    name: Lint, test and package
+    runs-on: [self-hosted, Linux, X64, checo]
+    steps:
+      # The runner is registered in *host* mode, so every step below runs
+      # directly on checo. No language runtime may touch the host: each step
+      # shells out to `docker run`. Nothing here uses a JS action, matching
+      # the ExoAutomata workflow on the same runner.
+      - name: Check out the target commit
+        run: |
+          set -euo pipefail
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          rm -rf "$CI_DIR"; mkdir -p "$CI_DIR"; cd "$CI_DIR"
+          git init -q
+          git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
+          git -c http.extraheader="Authorization: token ${{ github.token }}" \
+              fetch -q --depth 1 origin "$SHA"
+          git checkout -q FETCH_HEAD
+          echo "Checked out $SHA"
+
+      # Containers run as the runner's own uid wherever they write to the
+      # mounted checkout, and the test container gets it read-only. Otherwise
+      # root-owned __pycache__ and dist/ land in $CI_DIR and the cleanup step
+      # cannot remove them.
+      - name: Lint (advisory)
+        continue-on-error: true
+        run: |
+          docker run --rm --memory=2g --cpus=2 \
+            -v "$CI_DIR":/repo:ro -w /repo -e HOME=/tmp \
+            python:3.13-slim bash -c \
+            'pip install -q --root-user-action=ignore ruff && ruff check . && ruff format --check .'
+
+      - name: Tests
+        run: |
+          set -euo pipefail
+          for PY in 3.12 3.13; do
+            echo "::group::Python $PY"
+            # The checkout is mounted read-only and copied into the container
+            # before install, so pip's in-tree build cannot write back to it.
+            docker run --rm --memory=4g --cpus=2 \
+              -v "$CI_DIR":/repo:ro -w /tmp \
+              -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+              "python:${PY}-slim" bash -c '
+                set -e
+                cp -r /repo /tmp/src
+                pip install -q --root-user-action=ignore /tmp/src pytest
+                cd /tmp/src
+                python -c "import species; print(\"species\", species.__version__)"
+                python -m pytest tests -q -p no:cacheprovider
+              '
+            echo "::endgroup::"
+          done
+
+      - name: Build the distributions
+        run: |
+          docker run --rm --memory=4g --cpus=2 \
+            --user "$(id -u):$(id -g)" \
+            -v "$CI_DIR":/repo -w /repo -e HOME=/tmp \
+            python:3.13-slim bash -c '
+              set -e
+              rm -rf dist build
+              python -m venv /tmp/v
+              /tmp/v/bin/pip install -q build twine
+              /tmp/v/bin/python -m build
+              /tmp/v/bin/twine check dist/*
+            '
+
+      - name: Inspect the wheel payload
+        run: |
+          # The grid is a 13 MB data file that setuptools will silently omit if
+          # package-data regresses, and the package is useless without it. The
+          # pickle and korg checks assert what this release deliberately drops.
+          docker run --rm -i --memory=2g \
+            -v "$CI_DIR":/repo:ro -w /repo python:3.13-slim python - <<'PY'
+          import glob, zipfile, os, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          print(f"{os.path.basename(whl)}  ({os.path.getsize(whl)/1e6:.1f} MB)")
+          fail = []
+          if not any(n.endswith("species/data/ATLAS9_grid.nc") for n in names):
+              fail.append("ATLAS9_grid.nc missing from the wheel")
+          if [n for n in names if n.endswith(".pickle")]:
+              fail.append("a pickle came back into the wheel")
+          if [n for n in names if "korg" in n.lower()]:
+              fail.append("korg files leaked into the wheel")
+          for f in fail:
+              print("FAIL:", f)
+          sys.exit(1 if fail else 0)
+          PY
+
+      - name: Install the wheel the way a stranger would
+        run: |
+          # Installing the built wheel into a clean interpreter is the only
+          # step that exercises the declared dependencies and the packaged
+          # grid together, with none of the source tree on the path.
+          docker run --rm --memory=4g --cpus=2 \
+            -v "$CI_DIR/dist":/dist:ro -w /tmp \
+            -e HOME=/tmp python:3.13-slim bash -c '
+              set -e
+              pip install -q --root-user-action=ignore /dist/*.whl
+              python - <<PY
+          from importlib.resources import files
+          import species
+          from species.moog.grid_io import read_grid_netcdf
+          print("version:", species.__version__)
+          p = files("species.data").joinpath("ATLAS9_grid.nc")
+          print("grid   : %.1f MB" % (p.stat().st_size / 1e6))
+          read_grid_netcdf(p)
+          print("grid reads back through the installed package")
+          PY
+            '
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$CI_DIR"

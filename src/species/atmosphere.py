@@ -625,13 +625,25 @@ class AtmosphereFitter:
     # Max step per iteration (trust region)
     _MAX_STEPS = np.array([500.0, 0.5, 0.3, 0.5])
 
-    # Parameter bounds
+    # Parameter bounds.
+    #
+    # NOTE these disagree with _ConvergenceState.DEFAULT_BOUNDS, which the
+    # per-parameter method uses: [Fe/H] is (-4.0, 0.6) here against (-3.0, 1.0)
+    # there, and vt (0.1, 5.0) against (0.0, 5.0). Two methods on the same class
+    # therefore search different spaces. Left as-is rather than unified in this
+    # pass, because changing a bound moves published numbers and that deserves
+    # its own change with its own validation.
     _BOUNDS = np.array([
         [3500.0, 9000.0],  # Teff
         [0.5, 4.9],        # logg
         [-4.0, 0.6],       # [Fe/H]
         [0.1, 5.0],        # vt
     ])
+
+    # The solver's parameter vector is [Teff, logg, [Fe/H], vt] -- note this is
+    # NOT the order of `initial`, which is (feh, teff, logg, vt). Named here so
+    # `hold` can be mapped onto vector positions without re-deriving it.
+    _SOLVER_PARAM_ORDER = ("temperature", "gravity", "metallicity", "velocity")
 
     def _fit_broyden(
         self,
@@ -657,6 +669,22 @@ class AtmosphereFitter:
         n_calls = 0
         last_result: AbfindResult | None = None
 
+        # `hold` was accepted here and never used, while compute_errors DID
+        # honour it -- so hold=["gravity"] returned a freely fitted log g
+        # wearing the uncertainty of a held one. A fabricated error bar in an
+        # output table is worse than a missing feature.
+        #
+        # Each residual pairs with exactly one parameter (EP slope <-> Teff,
+        # Fe I - Fe II <-> log g, abundance consistency <-> [Fe/H], RW slope
+        # <-> vt), so holding a parameter drops its residual too and the system
+        # stays square.
+        free = np.array([name not in hold for name in self._SOLVER_PARAM_ORDER])
+        idx = np.where(free)[0]
+        if idx.size == 0:
+            raise ValueError("every parameter is held; there is nothing to solve")
+        if idx.size < 4:
+            logger.info("Broyden: holding %s", ", ".join(sorted(hold)))
+
         with self.moog.open_session(linelist_path) as session:
             def moog_func(p: np.ndarray) -> tuple[np.ndarray, AbfindResult | None]:
                 """Evaluate the 4 diagnostics at parameter vector p."""
@@ -678,7 +706,7 @@ class AtmosphereFitter:
             # Initial evaluation
             f0, last_result = moog_func(params)
             n_calls += 1
-            quadr = np.linalg.norm(f0)
+            quadr = np.linalg.norm(f0[idx])
 
             # Convergence threshold: L2 norm of 4 residuals. Each residual
             # should be < tol (0.001), so ||f|| < sqrt(4)*tol ≈ 0.002. Use 0.005
@@ -689,8 +717,8 @@ class AtmosphereFitter:
                 return self._broyden_result(params, last_result, True, n_calls, "broyden")
 
             # Compute initial Jacobian via finite differences (4 extra calls)
-            J = np.zeros((4, 4))
-            for j in range(4):
+            J = np.eye(4)
+            for j in idx:
                 p_pert = params.copy()
                 p_pert[j] += self._FD_STEPS[j]
                 p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
@@ -713,7 +741,8 @@ class AtmosphereFitter:
             for iteration in range(1, 30):
                 # Solve J @ delta = -f
                 try:
-                    delta = -np.linalg.solve(J, f0)
+                    delta = np.zeros(4)
+                    delta[idx] = -np.linalg.solve(J[np.ix_(idx, idx)], f0[idx])
                 except np.linalg.LinAlgError:
                     logger.warning("Singular Jacobian at iteration %d", iteration)
                     break
@@ -734,18 +763,21 @@ class AtmosphereFitter:
                 if result_new is not None:
                     last_result = result_new
 
-                new_quadr = np.linalg.norm(f_new)
+                new_quadr = np.linalg.norm(f_new[idx])
                 logger.info(
                     "Broyden %2d: ||f||=%.4f T=%.0f logg=%.3f feh=%.4f vt=%.4f (%d calls)",
                     iteration, new_quadr, *params_new, n_calls,
                 )
 
                 # Broyden rank-1 update
-                actual_dx = params_new - params
-                actual_df = f_new - f0
+                actual_dx = (params_new - params)[idx]
+                actual_df = (f_new - f0)[idx]
                 denom = actual_dx @ actual_dx
                 if denom > 1e-30:
-                    J = J + np.outer(actual_df - J @ actual_dx, actual_dx) / denom
+                    Jff = J[np.ix_(idx, idx)]
+                    J[np.ix_(idx, idx)] = Jff + np.outer(
+                        actual_df - Jff @ actual_dx, actual_dx
+                    ) / denom
 
                 params = params_new
                 prev_quadr = quadr
@@ -765,7 +797,7 @@ class AtmosphereFitter:
                     stagnation += 1
                     if stagnation >= 3:
                         logger.warning("Broyden stagnated, resetting Jacobian")
-                        for j in range(4):
+                        for j in idx:
                             p_pert = params.copy()
                             p_pert[j] += self._FD_STEPS[j]
                             p_pert = np.clip(p_pert, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
@@ -817,22 +849,58 @@ class AtmosphereFitter:
         from scipy.optimize import minimize
 
         feh0, teff0, logg0, vt0 = initial
+        bounds = dict(_ConvergenceState.DEFAULT_BOUNDS)
+        if boundaries:
+            bounds.update(boundaries)
+        feh_lo, feh_hi = bounds["metallicity"]
+
+        # The simplex searches (Teff, log g, vt); [Fe/H] is not a free direction,
+        # it is a FIXED POINT of the model at each trial point -- the classical
+        # condition that the mean Fe I abundance equal the model metallicity.
+        #
+        # This method used to read `feh = feh0  # Updated below` and never update
+        # it, so every MOOG call ran at the caller's starting metallicity (0.0 by
+        # default) and the abundance residual `ab` was computed and then dropped
+        # from the objective entirely. Three of the four classical conditions
+        # were solved at a metallicity that was usually wrong, and the [Fe/H]
+        # finally reported came from a single post-hoc run that was never fed
+        # back. For a metal-poor star the error propagates into log g through the
+        # ionisation balance, and it does so in the shape -- near zero at solar,
+        # growing with |[Fe/H]| -- that is otherwise the signature of real
+        # physics.
+        def solve_feh(teff, logg, vt, feh_start):
+            """Iterate [Fe/H] to its fixed point at fixed (Teff, log g, vt)."""
+            feh = float(np.clip(feh_start, feh_lo, feh_hi))
+            result = None
+            for _ in range(50):
+                result = self._run_moog(teff, logg, feh, vt, linelist_path)
+                if result is None:
+                    return None, feh
+                ab = result.fe_i_abundance - self.config.fe_solar
+                if abs(ab - feh) <= self.config.tolerance.ab:
+                    return result, feh
+                feh = float(np.clip(ab, feh_lo, feh_hi))
+            return result, feh
+
+        # Carried between objective evaluations so each trial starts from the
+        # previous fixed point rather than from feh0; the simplex takes small
+        # steps, so this converges in one or two MOOG calls after the first.
+        feh_state = {"value": feh0}
 
         def objective(x: np.ndarray) -> float:
             teff, logg, vt = x
-            feh = feh0  # Updated below
-
-            result = self._run_moog(teff, logg, feh, vt, linelist_path)
+            result, feh = solve_feh(teff, logg, vt, feh_state["value"])
             if result is None:
                 return 1e10
+            feh_state["value"] = feh
 
-            ab = result.fe_i_abundance - self.config.fe_solar
             ep = result.ep_slope
             dif = result.fe_i_fe_ii_diff
             rw = result.rw_slope
 
-            # Objective: minimize weighted sum of squared residuals
-            # Weights from original: 5*((3.5*ep)^2 + (1.3*rw)^2) + 2*(dif)^2
+            # Weights from the original: 5*((3.5*ep)^2 + (1.3*rw)^2) + 2*(dif)^2.
+            # The abundance condition is absent on purpose -- solve_feh has
+            # already driven it to zero, so including it would double-count.
             return 5.0 * ((3.5 * ep) ** 2 + (1.3 * rw) ** 2) + 2.0 * dif ** 2
 
         x0 = np.array([teff0, logg0, vt0])
@@ -840,9 +908,8 @@ class AtmosphereFitter:
                        options={"maxiter": 10000, "xatol": 1.0, "fatol": 1e-6})
 
         teff, logg, vt = res.x
-        # Final MOOG run to get the actual parameters
-        result = self._run_moog(teff, logg, feh0, vt, linelist_path)
-        feh = (result.fe_i_abundance - self.config.fe_solar) if result else feh0
+        # Final run at the converged point, with [Fe/H] again a fixed point.
+        result, feh = solve_feh(teff, logg, vt, feh_state["value"])
 
         return AtmosphericParameters(
             teff=float(teff), logg=float(logg), feh=float(feh), vt=float(vt),

@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from uncertainties import ufloat
-from uncertainties import unumpy
+from uncertainties import ufloat, unumpy
 
 from species.atmosphere import AtmosphericParameters
 from species.moog.parser import AbfindResult
@@ -319,18 +318,32 @@ def _extract_regression_data(
             if res_rw.stderr > 0:
                 err_rw = res_rw.stderr
 
-            # Mean abundance uncertainty using unumpy
+            # Mean abundance uncertainty using unumpy. This one matches the
+            # original exactly: 0.5/sqrt(N_FeI), a pure line-count statistic
+            # that does not depend on S/N. Questionable, but it is what the
+            # published errors were computed with, so it stays until there is a
+            # validation target to change it against.
             m = unumpy.uarray(ab_clean, np.full(len(ab_clean), coeff.default_ab_uncertainty))
             err_ab_fe_i = float(np.mean(m).s)
 
-    if len(fe_ii_lines) >= 2 and len(fe_i_lines) >= 2:
-        ab_i = np.array([lr.abundance for lr in fe_i_lines])
-        ab_ii = np.array([lr.abundance for lr in fe_ii_lines])
-        # Combined uncertainty for Fe I-II difference
-        m_all = unumpy.uarray(
-            np.concatenate([ab_i, ab_ii]),
-            np.full(len(ab_i) + len(ab_ii), coeff.default_ab_uncertainty),
-        )
-        err_dif = float(np.mean(m_all).s)
+            # Uncertainty on Fe I - Fe II: the line-to-line SCATTER of the
+            # clipped Fe I abundances, not the standard error of a mean.
+            #
+            # v4 used the SEM of a pooled Fe I + Fe II array with an assumed
+            # 0.5 dex per line -- 0.5/sqrt(N_I + N_II), about 0.038 for a
+            # typical 150 + 20 line star, against a real scatter of 0.10-0.15.
+            # err_dif drives the log g uncertainty through the polynomial
+            # transfer function, so log g errors came out 3-4x too small;
+            # Soto & Jenkins 2018 Table 1 publishes dwarf sigma(log g) of
+            # 0.24-0.75 dex.
+            #
+            # CalcErrors_new.py used np.std here and had the SEM route sitting
+            # commented out immediately above it, so the port reversed a
+            # deliberate choice. The scatter is the right scale for a difference
+            # of means only because the two samples share their dominant
+            # systematics; it is not a formal propagation, it is the empirical
+            # quantity the polynomial coefficients were calibrated against.
+            if len(fe_ii_lines) >= 2:
+                err_dif = float(np.std(ab_clean))
 
     return ep, rw, err_ep, err_rw, err_dif, err_ab_fe_i

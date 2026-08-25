@@ -40,6 +40,21 @@ from species.spectrum import Spectrum
 logger = logging.getLogger(__name__)
 
 
+def _run_one(task: tuple) -> AnalysisResult:
+    """Analyse one star in a worker process.
+
+    Module level on purpose: ProcessPoolExecutor pickles the callable, and a
+    function nested inside ``Analyzer.batch`` cannot be pickled. It used to live
+    there, carrying a docstring that said it must be top-level, which meant
+    every parallel submit failed and every star came back recorded as an error.
+    """
+    spec, star_dir, config_dict, kwargs = task
+    analyzer = Analyzer(spec, output_dir=Path(star_dir), config=Settings(**config_dict))
+    if kwargs:
+        analyzer.configure(**kwargs)
+    return analyzer.run()
+
+
 class Analyzer:
     """Main SPECIES analysis orchestrator.
 
@@ -147,6 +162,9 @@ class Analyzer:
             spec_1d.snr,
             self.config.linelist_path,
             output_dir=self.output_dir,
+            resolution=self.spectrum.resolving_power,
+            vsini=self._overrides.get("vsini", 0.0),
+            vmac=self._overrides.get("vmac", 0.0),
         )
 
         valid_ew = [r for r in ew_results if r.is_valid]
@@ -238,7 +256,16 @@ class Analyzer:
                 params,
                 ni_abundance=ni_ab.abundance if ni_ab else params.feh,
                 ni_uncertainty=ni_ab.uncertainty if ni_ab else 0.1,
+                resolution=self.spectrum.resolving_power,
             )
+            if self.spectrum.resolving_power <= 0:
+                logger.warning(
+                    "No resolving power known for instrument %r: the "
+                    "instrumental profile cannot be deconvolved, so vsini "
+                    "absorbs it and should be read as an upper limit. Set "
+                    "Spectrum.resolution explicitly.",
+                    self.spectrum.instrument,
+                )
 
         # Build metadata
         snr_val = spec.snr
@@ -350,31 +377,27 @@ class Analyzer:
         # Parallel execution
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        def _run_one(spec_data: tuple) -> AnalysisResult:
-            """Worker function — must be top-level picklable."""
-            wave, flux, snr, instrument, star_name, star_dir_str, config_dict, kwargs = spec_data
-            cfg = Settings(**config_dict)
-            spec = Spectrum.from_arrays(wave, flux, snr=snr, instrument=instrument, star_name=star_name)
-            analyzer = Analyzer(spec, output_dir=Path(star_dir_str), config=cfg)
-            if kwargs:
-                analyzer.configure(**kwargs)
-            return analyzer.run()
-
-        # Serialize spectra for pickling (numpy arrays + metadata)
+        # `_run_one` is module level. It used to be defined here, inside
+        # `batch`, with a docstring that read "must be top-level picklable" --
+        # and a nested function is not picklable, so every submit raised, every
+        # star was recorded as failed, and the CLI went on to write a full set
+        # of zero-filled result files. A batch that silently produces plausible
+        # empty output is worse than one that crashes.
+        #
+        # It also takes the Spectrum itself rather than a tuple of its arrays.
+        # The tuple carried wavelength, flux, snr, instrument and star_name and
+        # dropped rv, header and ccf_result, so a worker rebuilding from it
+        # would re-run the CCF and report rv = 0 for a spectrum that had already
+        # been rest-frame corrected.
         tasks = []
         for spec in spectra:
             star_dir = output_dir / spec.star_name
-            # Extract config as dict for serialization
             config_dict = {
                 k: str(v) if isinstance(v, Path) else v
                 for k, v in config.model_dump().items()
                 if v is not None
             }
-            tasks.append((
-                spec.wavelength, spec.flux, spec.snr,
-                spec.instrument, spec.star_name,
-                str(star_dir), config_dict, configure_kwargs,
-            ))
+            tasks.append((spec, str(star_dir), config_dict, configure_kwargs))
 
         results: list[AnalysisResult | None] = [None] * len(spectra)
         with ProcessPoolExecutor(max_workers=min(n_cores, len(spectra))) as pool:

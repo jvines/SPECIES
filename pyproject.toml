@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astro-species"
-version = "4.0.4"
+version = "4.1.0"
 description = "SPECtroscopic Inference of stEllar parameterS"
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,7 @@ dependencies = [
     "pydantic-settings>=2.1",
     "uncertainties>=3.1",
     "PyAstronomy>=0.21",
+    "netCDF4>=1.6",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +46,7 @@ species = "species.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-species = ["data/linelists/*.dat", "data/masks/*.mas", "data/*.pickle"]
+species = ["data/linelists/*.dat", "data/masks/*.mas", "data/*.nc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
