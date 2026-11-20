@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 4.2.0 — 2026-11-20
+
+Abundances: Mn and Cu were overestimated (no hyperfine structure, a phantom and
+two blended Mn lines), and the abundance table's Fe rows sat ~0.33 dex above the
+fitted [Fe/H] (blend satellites fitted as separate lines). Both changed reported
+numbers silently; Mn, Cu and table Fe from 4.1.0 and earlier should not be used.
+Also: solver convergence diagnostics, a MAROON-X reader, and a working
+`species install-moog`.
+
+Minor rather than patch: abundances and their errors move.
 
 ### Wrong numbers, no error raised
 
