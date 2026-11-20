@@ -2,12 +2,37 @@
 
 ## Unreleased
 
+### Wrong numbers, no error raised
+
+- **Mn and Cu were overestimated (SPEC-2).** Their lines are hyperfine-split
+  but went through MOOG `abfind` as single lines. They now go through MOOG
+  `blends` with their HFS (and Cu isotopic) components from
+  `data/linelists/hfs_mn_cu.dat`. The patterns come from the Gaia-ESO line list
+  (Heiter et al. 2021), or from Kurucz for Mn I 5413.67, which Gaia-ESO lists
+  unsplit. The total log gf and the wavelength of each line are unchanged. Two
+  bad Mn lines were removed from `lines_ab.dat`. The first, 5255.380 (EP
+  5.52 eV, log gf −8.78), took the EW of Mn I 5255.33 and returned
+  A(Mn) ≈ 15.7. Sigma clipping hid it only when there were three or more lines.
+  The second, 5505.866, is dominated by Fe I 5505.88 and gave +1.1 dex in the
+  Sun. On the HARPS solar spectrum, at SPECIES' converged parameters, [Mn/H]
+  went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00.
+
+### Fixed
+
 - **`species install-moog` produced a binary that only worked from
   /moog17scat** (SPEC-5). MOOG opens `Barklem.dat`/`BarklemUV.dat` via a path
   compiled in from `moogpath` in `Moog.f`/`Moogsilent.f` (`'/moog17scat'`).
   The installer now rewrites it to the install directory before `make`
   (prefixes over 58 characters are refused, the Fortran buffer is 60). No
   `/moog17scat` symlink needed.
+
+### Added
+
+- **Solver convergence diagnostics** (SPEC-1). `AtmosphericParameters` and
+  `AnalysisResult.to_dict()` now carry `final_residuals` (EP slope, Fe I − Fe II,
+  [Fe/H] derived − input, RW slope), `n_iters` (MOOG evaluations), `hit_iter_cap`,
+  `last_moog_status` and `n_fe_lines_input`, for every solver. Unknown is None,
+  never 0.
 
 - **MAROON-X (Gemini-N) reader** (SPEC-3). `Spectrum.from_fits` (and so the CLI
   and `Analyzer.batch`) routes `*.hd5` pandas stores to `Spectrum.from_maroonx`:
