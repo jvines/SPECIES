@@ -425,6 +425,43 @@ def measure_equivalent_widths(
     return results
 
 
+def select_moog_lines(
+    ew_results: list[EWResult],
+    linelist: LineList,
+    ew_min: float = 10.0,
+    ew_max: float = 150.0,
+    max_relative_error: float = 0.5,
+) -> list[tuple[int, float]]:
+    """Apply the MOOG input quality cuts to measured EWs.
+
+    Returns ``(linelist_index, ew_mA)`` for every line that passes, in the
+    order of ``ew_results``. Shared by :func:`create_moog_linelist` and the
+    hyperfine-structure path in :mod:`species.abundances`, so both apply
+    identical cuts.
+    """
+    selected: list[tuple[int, float]] = []
+    for ew_res in ew_results:
+        if not ew_res.is_valid:
+            continue
+
+        # Original SPECIES uses the direct Gaussian fit EW (column 2),
+        # not the MC median (column 3), for MOOG input
+        ew = ew_res.ew
+        ew_err = max(ew_res.ew_err_plus, ew_res.ew_err_minus)
+
+        if not (ew_min <= ew <= ew_max):
+            continue
+        if ew_err <= 0 or ew_err / ew > max_relative_error:
+            continue
+
+        # Find matching line in the atomic line list
+        idx = np.where(linelist.wavelengths == ew_res.wavelength)[0]
+        if len(idx) != 1:
+            continue
+        selected.append((int(idx[0]), ew))
+    return selected
+
+
 def create_moog_linelist(
     ew_results: list[EWResult],
     linelist: LineList,
@@ -443,30 +480,12 @@ def create_moog_linelist(
     n_fe_ii = 0
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected = select_moog_lines(ew_results, linelist, ew_min, ew_max, max_relative_error)
 
     with open(output_path, "w") as f:
         f.write(f" {output_path.stem}\n")
 
-        for ew_res in ew_results:
-            if not ew_res.is_valid:
-                continue
-
-            # Original SPECIES uses the direct Gaussian fit EW (column 2),
-            # not the MC median (column 3), for MOOG input
-            ew = ew_res.ew
-            ew_err = max(ew_res.ew_err_plus, ew_res.ew_err_minus)
-
-            if not (ew_min <= ew <= ew_max):
-                continue
-            if ew_err <= 0 or ew_err / ew > max_relative_error:
-                continue
-
-            # Find matching line in the atomic line list
-            idx = np.where(linelist.wavelengths == ew_res.wavelength)[0]
-            if len(idx) != 1:
-                continue
-            idx = int(idx[0])
-
+        for idx, ew in selected:
             ion = linelist.ionization[idx]
             if ion == 26.0:
                 n_fe_i += 1

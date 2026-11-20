@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Wrong numbers, no error raised
+
+- **Mn and Cu were overestimated (SPEC-2).** Their lines are hyperfine-split
+  but went through MOOG `abfind` as single lines. They now go through MOOG
+  `blends` with their HFS (and Cu isotopic) components from
+  `data/linelists/hfs_mn_cu.dat`. The patterns come from the Gaia-ESO line list
+  (Heiter et al. 2021), or from Kurucz for Mn I 5413.67, which Gaia-ESO lists
+  unsplit. The total log gf and the wavelength of each line are unchanged. Two
+  bad Mn lines were removed from `lines_ab.dat`. The first, 5255.380 (EP
+  5.52 eV, log gf −8.78), took the EW of Mn I 5255.33 and returned
+  A(Mn) ≈ 15.7. Sigma clipping hid it only when there were three or more lines.
+  The second, 5505.866, is dominated by Fe I 5505.88 and gave +1.1 dex in the
+  Sun. On the HARPS solar spectrum, at SPECIES' converged parameters, [Mn/H]
+  went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00.
+
 ## 4.1.0 — 2026-08-24
 
 Eight defects, all introduced by the v4 rewrite and none present in the

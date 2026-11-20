@@ -169,3 +169,60 @@ def write_synth_par(
 
     output_path.write_text("\n".join(lines_out) + "\n")
     return output_path
+
+
+def write_blends_par(
+    output_path: Path,
+    *,
+    model_path: Path,
+    linelist_path: Path,
+    summary_out: Path,
+    standard_out: Path,
+    atom: float,
+    delwave: float = 1.0,
+    step: float = 0.005,
+    atmosphere: int = 1,
+    molecules: int = 1,
+    trudamp: int = 1,
+    lines: int = 1,
+    flux_int: int = 0,
+    damping: int = 1,
+    freeform: int = 0,
+    plot: int = 0,
+) -> Path:
+    """Write a MOOG ``blends`` parameter file.
+
+    ``blends`` fits the abundance of one element (``atom``, e.g. ``25`` for Mn)
+    so that the synthetic EW of each group of lines matches the observed one.
+    Here a group is the set of hyperfine components of one line.
+
+    Parameters
+    ----------
+    atom
+        Atomic number of the element whose abundance is varied.
+    delwave
+        Synthesis extends this many A blueward of the first and redward of the
+        last component, so the line wings enter the synthetic EW.
+    step
+        Wavelength step of the synthesis in A.
+    """
+    lines_out = [
+        "blends",
+        "terminal       'x11'",
+        f"standard_out   '{standard_out}'",
+        f"summary_out    '{summary_out}'",
+        f"model_in       '{model_path}'",
+        f"lines_in       '{linelist_path}'",
+        f"atmosphere     {atmosphere}",
+        f"molecules      {molecules}",
+        f"trudamp        {trudamp}",
+        f"lines          {lines}",
+        f"flux/int       {flux_int}",
+        f"damping        {damping}",
+        f"freeform       {freeform}",
+        f"plot           {plot}",
+        "blenlimits",
+        f"  {delwave:.3f}  {step:.4f}  {int(atom)}",
+    ]
+    output_path.write_text("\n".join(lines_out) + "\n")
+    return output_path

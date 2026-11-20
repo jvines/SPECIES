@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import ClassVar
 
-from species.moog.par_file import write_abfind_par, write_synth_par
+from species.moog.par_file import write_abfind_par, write_blends_par, write_synth_par
 from species.moog.parser import AbfindResult, parse_abfind_output
 
 logger = logging.getLogger(__name__)
@@ -364,3 +364,40 @@ class MOOGSession:
             raise MOOGError("MOOG produced no summary output in session")
 
         return parse_abfind_output(self._summary, mode=read_mode)
+
+    def run_blends(self, linelist_path: Path, atom: float) -> Path:
+        """Run MOOG ``blends`` for one element using the model at ``model_path``.
+
+        ``linelist_path`` is a blends-format line list (see
+        :func:`species.hfs.write_blends_linelist`). Returns the summary file,
+        which stays valid until the next call on this session.
+
+        Raises
+        ------
+        MOOGError
+            If MOOG writes no abundance. ``blends`` stops the whole run when a
+            single group fails to converge, so callers should be ready to
+            retry groups one at a time.
+        """
+        local = self._run_dir / f"blends_{int(atom)}.txt"
+        if Path(linelist_path) != local:
+            shutil.copy2(linelist_path, local)
+        summary = self._run_dir / "blends_summary.out"
+        standard = self._run_dir / "blends_standard.out"
+        par_file = self._run_dir / "batch.par"
+        summary.unlink(missing_ok=True)
+        standard.unlink(missing_ok=True)
+
+        write_blends_par(
+            par_file,
+            model_path=self.model_path,
+            linelist_path=local,
+            summary_out=summary,
+            standard_out=standard,
+            atom=atom,
+        )
+        self._runner._execute(par_file, self._run_dir)
+
+        if not summary.exists() or "average abundance" not in summary.read_text():
+            raise MOOGError(f"MOOG blends produced no abundance for atom {int(atom)}")
+        return summary
