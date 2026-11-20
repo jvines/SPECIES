@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +43,7 @@ from species.hfs import (
     write_blends_linelist,
 )
 from species.moog.atmosphere_grid import AtmosphereGrid
+from species.moog.parser import AbfindResult
 from species.moog.wrapper import MOOGError, MOOGRunner, MOOGSession
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ def determine_abundances(
     config: Settings,
     moog: MOOGRunner,
     grid: AtmosphereGrid,
+    fe_abfind: AbfindResult | None = None,
 ) -> dict[str, ElementAbundance]:
     """Determine chemical abundances from a multi-element line list.
 
@@ -84,6 +86,12 @@ def determine_abundances(
         MOOG runner instance.
     grid
         Atmosphere grid for model interpolation.
+    fe_abfind
+        The solver's final abfind at ``params``. When given, the Fe I and Fe II
+        rows come from its lines and EWs -- the ones [Fe/H] was fitted on, with
+        solar-calibrated log gf -- rather than from the Fe lines of the
+        abundance list, whose log gf sit a median 0.13 dex below linelist.dat's
+        for the same transitions and put the table's Fe above the fitted [Fe/H].
 
     Returns
     -------
@@ -110,6 +118,10 @@ def determine_abundances(
     hfs_table = _load_hfs(config)
     single = [r for r in ew_results if components_for(hfs_table, r.wavelength) is None]
     split = [r for r in ew_results if components_for(hfs_table, r.wavelength) is not None]
+    # One entry per feature the EW fit can resolve: unresolved same-species
+    # components (synthesis satellites, fine-structure pairs) are folded into
+    # the strongest one instead of each being handed the whole feature's EW.
+    single, ab_linelist = fold_unresolved_blends(single, ab_linelist, params.teff)
     moog_ab_path = config.output_dir / "moog_ab_linelist.txt"
     create_moog_linelist(single, ab_linelist, moog_ab_path, **_EW_CUTS)
     hfs_groups = _hfs_groups(split, ab_linelist, hfs_table)
@@ -145,6 +157,15 @@ def determine_abundances(
     except MOOGError as e:
         logger.warning("MOOG failed for abundance determination: %s", e)
         return {}
+
+    # Fe on the solver's own lines and EWs
+    if fe_abfind is not None:
+        for ion_name in ("FeI", "FeII"):
+            summary = _summarise([lr.abundance for lr in fe_abfind.lines.get(ion_name, [])])
+            if summary is not None:
+                raw_abundances[ion_name] = summary
+            else:
+                raw_abundances.pop(ion_name, None)
 
     # 5. Build ElementAbundance objects
     abundances: dict[str, ElementAbundance] = {}
@@ -240,9 +261,105 @@ def _summarise(ab_list: list[float]) -> tuple[float, float, int] | None:
     if len(ab_clean) == 0:
         return None
     mean_ab = float(np.mean(ab_clean))
-    # Uncertainty via uncertainties-style propagation (±0.2 per line)
-    std_ab = 0.2 / np.sqrt(len(ab_clean)) if len(ab_clean) > 1 else 0.2
-    return mean_ab, std_ab, len(ab_clean)
+    return mean_ab, line_scatter_error(ab_clean), len(ab_clean)
+
+
+# Per-line dispersion assumed when it cannot be measured (fewer than 3 lines),
+# and the floor on a measured one: a handful of lines can agree by chance.
+_SIGMA_LINE_PRIOR = 0.20  # dex
+_SIGMA_LINE_FLOOR = 0.05  # dex
+
+
+def line_scatter_error(ab: np.ndarray) -> float:
+    """Error of a mean abundance: measured line-to-line scatter / sqrt(n).
+
+    The scatter (sample std, ddof=1) is floored at 0.05 dex. With fewer than
+    three lines it is not estimable, and the old fixed 0.2 dex per line is kept
+    as a floor instead.
+    """
+    ab = np.asarray(ab, dtype=float)
+    n = len(ab)
+    if n == 0:
+        return float("nan")
+    scatter = float(np.std(ab, ddof=1)) if n > 1 else 0.0
+    floor = _SIGMA_LINE_FLOOR if n >= 3 else _SIGMA_LINE_PRIOR
+    return max(scatter, floor) / np.sqrt(n)
+
+
+# Same-species entries closer than this are one feature to the EW fit, which
+# treats any line found within 0.10 A of the target as the target.
+_BLEND_TOL = 0.10  # A
+
+
+def fold_unresolved_blends(
+    ew_results: list[EWResult],
+    linelist: LineList,
+    teff: float,
+    tol: float = _BLEND_TOL,
+) -> tuple[list[EWResult], LineList]:
+    """Collapse unresolved same-species components onto the strongest one.
+
+    lines_ab.dat carries synthesis-style component lists: e.g. Fe I 5543.936
+    (log gf -1.14) next to a 5543.974 satellite at log gf -6.06, or Fe II
+    5234.623 next to a 10.4 eV entry. Each entry was measured on its own, the
+    Gaussian fit found the same feature for both, and MOOG returned +1 to +9
+    dex for the satellites -- enough of which survived the 1.5-sigma clip to
+    lift the Sun's Fe I by 0.27 dex.
+
+    Entries of one species whose wavelengths chain within ``tol`` form a group.
+    The group's EW is the one measured at its strongest component (line
+    strength log gf - theta*chi, theta = 5040/Teff), or failing that any valid
+    EW in the group, and that component's log gf becomes the group's effective
+    value, ``log10(sum_i gf_i 10^(-theta (chi_i - chi_0)))``: exact for weak
+    lines of one ion, and a negligible change when the rest are satellites.
+
+    Returns the EW results (one per group, at the strongest component's
+    wavelength) and a copy of the line list with the effective log gf.
+    """
+    theta = 5040.0 / teff
+    wl_all = np.asarray(linelist.wavelengths, dtype=float)
+    loggf = np.array(linelist.loggf, dtype=float)
+
+    rows = []
+    for r in ew_results:
+        idx = np.where(wl_all == r.wavelength)[0]
+        if len(idx) == 1:
+            rows.append((int(idx[0]), r))
+    rows.sort(key=lambda t: (float(linelist.ionization[t[0]]), wl_all[t[0]]))
+
+    groups: list[list[tuple[int, EWResult]]] = []
+    for row in rows:
+        if groups:
+            last_idx = groups[-1][-1][0]
+            if (
+                float(linelist.ionization[last_idx]) == float(linelist.ionization[row[0]])
+                and wl_all[row[0]] - wl_all[last_idx] <= tol
+            ):
+                groups[-1].append(row)
+                continue
+        groups.append([row])
+
+    folded: list[EWResult] = []
+    for group in groups:
+        if len(group) == 1:
+            folded.append(group[0][1])
+            continue
+        ix = np.array([i for i, _ in group])
+        chi = np.asarray(linelist.excitation_potential, dtype=float)[ix]
+        gf = np.asarray(linelist.loggf, dtype=float)[ix]
+        k = int(np.argmax(gf - theta * chi))
+        dom = int(ix[k])
+        loggf[dom] = float(np.log10(np.sum(10.0 ** (gf - theta * (chi - chi[k])))))
+        ew = group[k][1]
+        if not ew.is_valid:
+            ew = next((r for _, r in group if r.is_valid), ew)
+        folded.append(replace(ew, wavelength=float(wl_all[dom])))
+        logger.debug(
+            "Folded %d entries near %.3f A into one line (log gf %.3f -> %.3f)",
+            len(group), wl_all[dom], gf[k], loggf[dom],
+        )
+
+    return folded, replace(linelist, loggf=loggf)
 
 
 # ---------------------------------------------------------------------------

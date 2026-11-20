@@ -17,6 +17,35 @@
   Sun. On the HARPS solar spectrum, at SPECIES' converged parameters, [Mn/H]
   went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00.
 
+- **The abundance table's Fe sat 0.2–0.4 dex above the fitted [Fe/H]**
+  (SPEC-4). On the HARPS Sun at the converged 5829/4.52/−0.00/0.70 it read
+  Fe I +0.33, Fe II +0.34. Two causes. (1) `lines_ab.dat` carries
+  synthesis-style component lists: satellites such as Fe I 5543.974
+  (log gf −6.06) beside 5543.936 (−1.14), or Fe II entries at 10.4 eV. Each
+  entry was measured as a line of its own. The Gaussian fit found the same
+  feature for every one of them, MOOG returned +1 to +9 dex for the satellites,
+  and the single 1.5σ clip kept enough of them to lift the mean. Same-species
+  entries within 0.10 Å are now folded into one line: the strongest component
+  (log gf − θχ at the star's Teff) carries the EW, with an effective
+  log gf = log Σ gf·10^(−θΔχ). That is exact for a same-EP pair such as
+  Na I 5688.19/5688.21, and a negligible change when the rest are satellites.
+  It is applied to every element except the HFS lines. Fe I goes from 52
+  entries to 41 features and Fe II from 15 to 10; Ti I and Cr I lose their
+  satellites too. (2) The real Fe I lines of `lines_ab.dat` have log gf a median
+  0.13 dex below linelist.dat's solar-calibrated values for the same
+  transitions. The Fe I and Fe II rows therefore now come from the solver's
+  final abfind, on the lines and EWs [Fe/H] was fitted on
+  (`determine_abundances(..., fe_abfind=)`, passed by `Analyzer`). The
+  abundance-list Fe lines remain only as a fallback. Results: on the Sun,
+  Fe I +0.000 ± 0.005 (101 lines) and Fe II −0.015 ± 0.013. On a MAROON-X epoch
+  fitted at [Fe/H] = 0.184 ± 0.050, Fe I +0.187 and Fe II +0.168; it was
+  +0.387 and +0.576.
+
+- **Abundance uncertainties are the measured line scatter / √n** (SPEC-4).
+  They used to be a fixed 0.2/√n. The scatter is floored at 0.05 dex. With
+  fewer than three lines, where it cannot be estimated, the old 0.2 dex per
+  line is kept as the floor.
+
 ### Fixed
 
 - **`species install-moog` produced a binary that only worked from
