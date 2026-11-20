@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`species install-moog` produced a binary that only worked from
+  /moog17scat** (SPEC-5). MOOG opens `Barklem.dat`/`BarklemUV.dat` via a path
+  compiled in from `moogpath` in `Moog.f`/`Moogsilent.f` (`'/moog17scat'`).
+  The installer now rewrites it to the install directory before `make`
+  (prefixes over 58 characters are refused, the Fortran buffer is 60). No
+  `/moog17scat` symlink needed.
+
 - **MAROON-X (Gemini-N) reader** (SPEC-3). `Spectrum.from_fits` (and so the CLI
   and `Analyzer.batch`) routes `*.hd5` pandas stores to `Spectrum.from_maroonx`:
   fiber 6, blue order 91 dropped, pixels masked by variance (not flux), edge
