@@ -275,6 +275,16 @@ def _cmd_install_moog(args: argparse.Namespace) -> int:
         cwd=prefix, capture_output=True, text=True,
     )
 
+    # MOOG opens Barklem.dat / BarklemUV.dat through an absolute path compiled
+    # into the binary (``moogpath`` in Moog.f / Moogsilent.f, shipped as
+    # '/moog17scat'). Point it at the install directory before compiling.
+    try:
+        patched = _patch_moog_path(prefix)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"Patched moogpath -> {prefix.resolve()} in {', '.join(patched)}")
+
     # Compile
     print("Compiling MOOG...")
     result = subprocess.run(
@@ -319,6 +329,40 @@ def _cmd_install_moog(args: argparse.Namespace) -> int:
     print(f"MOOG installed at {moogsilent}")
     _print_config_hint(prefix)
     return 0
+
+
+# MOOG declares ``character*60 moogpath`` and appends a trailing slash.
+_MOOGPATH_MAX = 58
+
+
+def _patch_moog_path(src_dir: Path) -> list[str]:
+    """Rewrite the compiled-in MOOG data directory to ``src_dir``.
+
+    The moog17scat sources hard-code ``moogpath = '/moog17scat'``; the binary
+    then reads ``<moogpath>/Barklem.dat`` and ``BarklemUV.dat`` by absolute
+    path, so it only works if the checkout happens to live at /moog17scat.
+    Returns the names of the patched files.
+    """
+    import re
+
+    target = str(Path(src_dir).resolve())
+    if len(target) > _MOOGPATH_MAX or "'" in target:
+        raise ValueError(
+            f"install prefix {target!r} cannot be compiled into MOOG (its path "
+            f"buffer is 60 characters; max {_MOOGPATH_MAX}, no quotes). "
+            "Use a shorter --prefix."
+        )
+    pattern = re.compile(r"(moogpath\s*=\s*\n\s*\.\s*)'[^']*'")
+    patched = []
+    for name in ("Moog.f", "Moogsilent.f"):
+        f = Path(src_dir) / name
+        text = f.read_text()
+        new, n = pattern.subn(lambda m: f"{m.group(1)}'{target}'", text)
+        if n != 1:
+            raise ValueError(f"could not find the moogpath assignment in {name}")
+        f.write_text(new)
+        patched.append(name)
+    return patched
 
 
 def _verify_moog_computes(moogsilent: Path, data_dir: Path) -> tuple[bool, str]:
