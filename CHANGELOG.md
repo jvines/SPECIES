@@ -15,7 +15,10 @@
   A(Mn) ≈ 15.7. Sigma clipping hid it only when there were three or more lines.
   The second, 5505.866, is dominated by Fe I 5505.88 and gave +1.1 dex in the
   Sun. On the HARPS solar spectrum, at SPECIES' converged parameters, [Mn/H]
-  went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00.
+  went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00. Mn I 5537.75 was then removed as well: Ti I 5537.85, of comparable
+  strength, blends it, and it was the high outlier in the Sun and in a metal-rich
+  G dwarf (+0.9 dex). With two Mn lines sigma clipping cannot reject it. Mn now
+  rests on 5004.89, 5117.93, 5255.33, 5377.61 and 5413.67.
 
 - **The abundance table's Fe sat 0.2–0.4 dex above the fitted [Fe/H]**
   (SPEC-4). On the HARPS Sun at the converged 5829/4.52/−0.00/0.70 it read
