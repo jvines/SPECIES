@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **MAROON-X (Gemini-N) reader** (SPEC-3). `Spectrum.from_fits` (and so the CLI
+  and `Analyzer.batch`) routes `*.hd5` pandas stores to `Spectrum.from_maroonx`:
+  fiber 6, blue order 91 dropped, pixels masked by variance (not flux), edge
+  trimming, S/N from flux/sqrt(var), R = 85000. The DRS wavelengths are
+  **vacuum**; they are converted to air for the SPECIES line lists. The
+  instrument response is optional (`response=` or `MAROONX_RESPONSE`); without
+  it each order is flattened by a polynomial envelope. New extra:
+  `pip install astro-species[maroonx]` (pandas, PyTables).
+
 ## 4.1.0 — 2026-08-24
 
 Eight defects, all introduced by the v4 rewrite and none present in the
