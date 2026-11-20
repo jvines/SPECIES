@@ -41,6 +41,7 @@ INSTRUMENT_RESOLUTION: dict[str, float] = {
     "FEROS": 48_000.0,
     "PFS": 80_000.0,
     "NRES": 53_000.0,
+    "MAROON-X": 85_000.0,       # Gemini-N, fixed; Seifahrt et al. 2018, 2020
     "UVES": 40_000.0,           # settable — override per setup
     "HIRES": 50_000.0,          # settable — override per decker
 }
@@ -113,8 +114,9 @@ class Spectrum:
         path: str | Path,
         instrument: str | None = None,
         star_name: str | None = None,
+        response: str | Path | None = None,
     ) -> Spectrum:
-        """Load a spectrum from a FITS file.
+        """Load a spectrum from a FITS file (or a MAROON-X pandas HDF store).
 
         Attempts to auto-detect the instrument from FITS header keywords
         if ``instrument`` is not specified.
@@ -127,8 +129,14 @@ class Spectrum:
             Instrument name. If ``None``, auto-detected from header.
         star_name
             Star name for labeling. Derived from filename if not given.
+        response
+            MAROON-X only: path to the instrument response file. Falls back to
+            the ``MAROONX_RESPONSE`` environment variable, then to per-order
+            continuum flattening.
         """
         path = Path(path)
+        if path.suffix.lower() in _HDF_SUFFIXES:
+            return cls.from_maroonx(path, star_name=star_name, response=response)
         if star_name is None:
             star_name = path.stem
 
@@ -155,6 +163,47 @@ class Spectrum:
             instrument=instrument.upper(),
             star_name=star_name,
             header=header_dict,
+        )
+
+    @classmethod
+    def from_maroonx(
+        cls,
+        path: str | Path,
+        star_name: str | None = None,
+        fiber: int = 6,
+        response: str | Path | None = None,
+        medium: str = "air",
+    ) -> Spectrum:
+        """Load a MAROON-X reduced spectrum (``*.hd5``, pandas HDFStore).
+
+        Blue and red arm orders are stacked into one echelle array (bluest
+        first). Needs the ``maroonx`` extra (pandas, PyTables).
+
+        Parameters
+        ----------
+        fiber
+            Fiber to read; 6 is the weighted combination of science fibers 2-4.
+        response
+            Instrument response file. If ``None``, ``MAROONX_RESPONSE`` is
+            used; if that is unset too, each order is flattened by an
+            iterative polynomial envelope instead.
+        medium
+            The DRS wavelengths are vacuum; SPECIES line lists are air, so the
+            default converts to air. Pass ``"vacuum"`` to keep them as is.
+        """
+        path = Path(path)
+        wave, flux, snr, header, target = _read_maroonx(
+            path, fiber=fiber, response=response, medium=medium
+        )
+        if star_name is None:
+            star_name = target.replace(" ", "_") if target else path.stem
+        return cls(
+            wavelength=wave,
+            flux=flux,
+            snr=snr,
+            instrument="MAROON-X",
+            star_name=star_name,
+            header=header,
         )
 
     @classmethod
@@ -598,6 +647,205 @@ def _wcs_wavelength(header: fits.Header) -> np.ndarray:
     cdelt = float(header["CDELT1"])
     crval = float(header["CRVAL1"])
     return (np.arange(n) + 1.0 - crpix) * cdelt + crval
+
+
+# ---------------------------------------------------------------------------
+# MAROON-X (Gemini-N) reader: pandas HDFStore, not FITS
+# ---------------------------------------------------------------------------
+
+_HDF_SUFFIXES = (".hd5", ".h5", ".hdf5", ".hdf")
+
+# Orders dropped from the blue arm. Order 91 is the first, partly vignetted one;
+# the team's own reference reader drops it as well.
+_MAROONX_DROP_ORDERS = {"blue": (91,), "red": ()}
+
+# A pixel whose variance exceeds this multiple of its order's median variance is
+# a filled (interpolated) pixel, not a measurement. The DRS sets those to 1e6.
+_MAROONX_MAX_VAR_FACTOR = 1.0e3
+
+# Edge trimming: contiguous edge pixels whose smoothed S/N is below this
+# fraction of the order's peak S/N are dropped (blaze roll-off, overlap zones).
+_MAROONX_EDGE_SNR_FRACTION = 0.4
+
+
+def vacuum_to_air(wave_vac: np.ndarray) -> np.ndarray:
+    """Vacuum to standard-air wavelengths (Angstrom). IAU / Morton (1991) form.
+
+    ``n - 1 = 6.4328e-5 + 2.94981e-2 / (146 - s^2) + 2.5540e-4 / (41 - s^2)``
+    with ``s = 1e4 / lambda_vac[A]`` (micron^-1). Accurate to well below 1 m/s.
+    """
+    wave_vac = np.asarray(wave_vac, dtype=np.float64)
+    s2 = (1.0e4 / np.where(wave_vac > 0, wave_vac, np.nan)) ** 2
+    n = 1.0 + 6.4328e-5 + 2.94981e-2 / (146.0 - s2) + 2.5540e-4 / (41.0 - s2)
+    out = wave_vac / n
+    return np.where(wave_vac > 0, out, wave_vac)
+
+
+def _flatten_order(flux: np.ndarray, valid: np.ndarray, deg: int = 6) -> np.ndarray:
+    """Smooth upper-envelope (blaze + continuum) estimate for one echelle order.
+
+    Iterative polynomial fit with asymmetric clipping, so absorption lines pull
+    the fit down far less than the continuum holds it up. Used only when no
+    instrument response is available.
+    """
+    x = np.linspace(-1.0, 1.0, flux.size)
+    keep = valid.copy()
+    fit = np.full(flux.size, np.nan)
+    for _ in range(10):
+        if keep.sum() <= deg + 2:
+            break
+        coef = np.polyfit(x[keep], flux[keep], deg)
+        fit = np.polyval(coef, x)
+        resid = flux - fit
+        sig = np.std(resid[keep])
+        new = valid & (resid > -1.0 * sig) & (resid < 3.0 * sig)
+        if new.sum() == keep.sum() and np.all(new == keep):
+            break
+        keep = new
+    return fit
+
+
+def _trim_edges(good: np.ndarray, snr_pix: np.ndarray) -> np.ndarray:
+    """Drop contiguous low-S/N pixels at both ends of an order."""
+    from scipy.ndimage import median_filter
+
+    if good.sum() < 50:
+        return good
+    sm = median_filter(np.where(good, snr_pix, 0.0), size=101, mode="nearest")
+    thr = _MAROONX_EDGE_SNR_FRACTION * np.nanmax(sm)
+    ok = np.flatnonzero(sm >= thr)
+    out = np.zeros_like(good)
+    if ok.size:
+        out[ok[0]: ok[-1] + 1] = good[ok[0]: ok[-1] + 1]
+    return out
+
+
+def _load_maroonx_response(path: str | Path | None) -> tuple[dict, dict] | None:
+    """Return ``(response_blue, response_red)`` dicts order -> array, or None."""
+    import os
+
+    import pandas as pd
+
+    path = path or os.environ.get("MAROONX_RESPONSE") or None
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"MAROON-X response file not found: {path}")
+    with pd.HDFStore(path, "r") as store:
+        blue = {int(k): np.asarray(v, dtype=float) for k, v in store["response_blue"].items()}
+        red = {int(k): np.asarray(v, dtype=float) for k, v in store["response_red"].items()}
+    return blue, red
+
+
+def _hdr_float(header, key: str) -> float | None:
+    try:
+        return float(header[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _read_maroonx(
+    path: Path,
+    fiber: int = 6,
+    response: str | Path | None = None,
+    medium: str = "air",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict, str]:
+    """Read a MAROON-X reduced spectrum (pandas HDFStore).
+
+    Returns wavelength (A, ``medium``), flux, per-order S/N, a plain header dict
+    and the target name. Orders from both arms are stacked, bluest first.
+    """
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - exercised only without extra
+        raise ImportError(
+            "Reading MAROON-X files needs pandas and PyTables: "
+            "pip install 'astro-species[maroonx]'"
+        ) from exc
+    if medium not in ("air", "vacuum"):
+        raise ValueError("medium must be 'air' or 'vacuum'")
+
+    resp = _load_maroonx_response(response)
+
+    with pd.HDFStore(path, "r") as store:
+        spec = {"blue": store["spec_blue"], "red": store["spec_red"]}
+        hdr = {"blue": store["header_blue"], "red": store["header_red"]}
+
+    rows = []  # (wave_A, flux, snr_median)
+    for arm in ("blue", "red"):
+        sp = spec[arm]
+        for order in sp.index.levels[1]:
+            order = int(order)
+            if order in _MAROONX_DROP_ORDERS[arm]:
+                continue
+            try:
+                w = np.asarray(sp["wavelengths"][fiber][order], dtype=float)
+                f = np.asarray(sp["optimal_extraction"][fiber][order], dtype=float)
+                v = np.asarray(sp["optimal_var"][fiber][order], dtype=float)
+            except KeyError:
+                continue
+            # Fiber 6 fills NaN pixels with interpolated flux and a huge
+            # variance; trust the variance, not the flux, there.
+            med_var = np.nanmedian(v[np.isfinite(v) & (v > 0)]) if np.any(v > 0) else np.nan
+            good = (
+                np.isfinite(w) & np.isfinite(f) & np.isfinite(v) & (v > 0)
+                & (v < _MAROONX_MAX_VAR_FACTOR * med_var)
+            )
+            snr_pix = np.where(good, f / np.sqrt(np.where(v > 0, v, np.nan)), 0.0)
+            good = _trim_edges(good, snr_pix)
+            if good.sum() < 100:
+                continue
+            snr_o = float(np.median(snr_pix[good]))
+
+            if resp is not None:
+                r = resp[0 if arm == "blue" else 1].get(order)
+                if r is not None and r.size == f.size:
+                    good &= np.isfinite(r) & (r > 0)
+                    f = np.where(good, f / np.where(good, r, 1.0), np.nan)
+                else:
+                    logger.warning("No usable response for %s order %d; flattening it", arm, order)
+                    f = f / _flatten_order(f, good)
+            else:
+                f = f / _flatten_order(f, good)
+            f = np.where(good, f, np.nan)
+            w_a = w * 10.0  # nm -> A, vacuum
+            if medium == "air":
+                w_a = vacuum_to_air(w_a)
+            rows.append((w_a, f, snr_o))
+
+    if not rows:
+        raise ValueError(f"No usable MAROON-X orders in {path}")
+    rows.sort(key=lambda r: float(np.nanmin(r[0])))
+    npix = max(r[0].size for r in rows)
+    wave = np.zeros((len(rows), npix))
+    flux = np.full((len(rows), npix), np.nan)
+    for i, (w_a, f, _) in enumerate(rows):
+        wave[i, : w_a.size] = w_a
+        flux[i, : f.size] = f
+    snr = np.array([r[2] for r in rows])
+
+    hb = hdr["blue"]
+    berv_raw = _hdr_float(hb, "BERV_FLUXWEIGHTED_FRD")
+    target = str(hb.get("MAROONX TELESCOPE TARGETNAME", "")).strip() if hasattr(hb, "get") else ""
+    header = {
+        "INSTRUME": "MAROON-X",
+        "OBJECT": target,
+        "PROGRAM": str(hb.get("MAROONX TELESCOPE PROGRAMID", "")),
+        "FIBER": fiber,
+        "EXPTIME": _hdr_float(hb, "EXPTIME"),
+        "AIRMASS": _hdr_float(hb, "MAROONX TELESCOPE AIRMASS"),
+        "JD_UTC_FLUXWEIGHTED_FRD": _hdr_float(hb, "JD_UTC_FLUXWEIGHTED_FRD"),
+        # Header value is in m/s. Recorded only: SPECIES derives its own rest
+        # frame by CCF, so nothing in the pipeline consumes it.
+        "BERV_FLUXWEIGHTED_FRD": berv_raw,
+        "BERV_KMS": None if berv_raw is None else berv_raw / 1000.0,
+        "WAVELENGTH_MEDIUM": medium,
+        "WAVELENGTH_SOURCE": "vacuum (DRS), converted" if medium == "air" else "vacuum (DRS)",
+        "RESPONSE_APPLIED": resp is not None,
+        "N_ORDERS": len(rows),
+    }
+    return wave, flux, snr, header, target
 
 
 # ---------------------------------------------------------------------------

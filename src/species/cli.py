@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- analyze ---
     p_analyze = sub.add_parser("analyze", help="Run full spectroscopic analysis")
-    p_analyze.add_argument("spectra", type=Path, nargs="+", help="Path(s) to FITS spectra")
+    p_analyze.add_argument("spectra", type=Path, nargs="+", help="Path(s) to spectra (FITS, or MAROON-X .hd5)")
     p_analyze.add_argument("--instrument", "-i", default=None, help="Instrument name (auto-detected if omitted)")
     p_analyze.add_argument("--output", "-o", type=Path, default=Path("./output"), help="Output directory")
     p_analyze.add_argument("--ncores", "-n", type=int, default=1, help="Number of parallel workers")
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- ew-only ---
     p_ew = sub.add_parser("ew-only", help="Measure equivalent widths only")
-    p_ew.add_argument("spectrum", type=Path, help="Path to FITS spectrum")
+    p_ew.add_argument("spectrum", type=Path, help="Path to spectrum (FITS, or MAROON-X .hd5)")
     p_ew.add_argument("--instrument", "-i", default=None)
     p_ew.add_argument("--output", "-o", type=Path, default=Path("./output"))
     p_ew.add_argument("-v", "--verbose", action="store_true")
