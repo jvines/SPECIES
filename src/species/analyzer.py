@@ -234,7 +234,7 @@ class Analyzer:
             snr_scalar = float(spec_1d.snr) if not hasattr(spec_1d.snr, "__len__") else float(np.median(spec_1d.snr))
             raw_ab = determine_abundances(
                 params, spec_1d.wavelength, spec_1d.flux, snr_scalar,
-                self.config, self.moog, self.grid,
+                self.config, self.moog, self.grid, fe_abfind=abfind,
             )
             abundances = {
                 name: ElementAbundanceResult(
