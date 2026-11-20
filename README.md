@@ -137,6 +137,7 @@ SPECIES reads spectra from:
 
 - **HARPS** (ESO 3.6m)
 - **FEROS** (ESO/MPG 2.2m)
+- **MAROON-X** (Gemini-N, `*.hd5`; needs the `maroonx` extra)
 - **UVES** (ESO VLT)
 - **HIRES** (Keck)
 - **CORALIE** (Euler 1.2m)

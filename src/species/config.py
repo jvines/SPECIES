@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     linelist_path: Path | None = Field(default=None)
     linelist_ab_path: Path | None = Field(default=None)
     linelist_vsini_path: Path | None = Field(default=None)
+    # Hyperfine components of the Mn I and Cu I lines of linelist_ab_path. Lines
+    # listed there go through MOOG blends instead of abfind.
+    linelist_hfs_path: Path | None = Field(default=None)
     mask_path: Path | None = Field(default=None)
 
     # -- Science defaults ----------------------------------------------------
@@ -123,6 +126,7 @@ class Settings(BaseSettings):
             "linelist_path": pkg / "linelists" / "linelist.dat",
             "linelist_ab_path": pkg / "linelists" / "lines_ab.dat",
             "linelist_vsini_path": pkg / "linelists" / "linelist_vsini.dat",
+            "linelist_hfs_path": pkg / "linelists" / "hfs_mn_cu.dat",
             "mask_path": pkg / "masks" / "G2.mas",
         }
         for attr, default_path in defaults.items():

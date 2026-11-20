@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astro-species"
-version = "4.1.0"
+version = "4.2.0"
 description = "SPECtroscopic Inference of stEllar parameterS"
 readme = "README.md"
 license = "MIT"
@@ -35,9 +35,10 @@ dependencies = [
 
 [project.optional-dependencies]
 photometry = ["astroquery>=0.4.7"]
+maroonx = ["pandas>=2.0", "tables>=3.9"]
 cli = ["click>=8.1"]
 test = ["pytest>=8.0", "pytest-cov"]
-dev = ["astro-species[photometry,cli,test]", "ruff"]
+dev = ["astro-species[photometry,cli,maroonx,test]", "ruff"]
 
 [project.scripts]
 species = "species.cli:main"

@@ -92,6 +92,15 @@ class AnalysisResult:
             "n_fe_i": self.params.n_fe_i,
             "n_fe_ii": self.params.n_fe_ii,
             "converged": self.params.converged,
+            "method": self.params.method,
+            "final_residuals": (
+                list(self.params.final_residuals)
+                if self.params.final_residuals is not None else None
+            ),
+            "n_iters": self.params.n_iters,
+            "hit_iter_cap": self.params.hit_iter_cap,
+            "last_moog_status": self.params.last_moog_status,
+            "n_fe_lines_input": self.params.n_fe_lines_input,
             "instrument": self.metadata.instrument,
             "rv": self.metadata.rv,
             "snr": self.metadata.snr,

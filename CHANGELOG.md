@@ -1,5 +1,89 @@
 # Changelog
 
+## 4.2.0 — 2026-11-20
+
+Abundances: Mn and Cu were overestimated (no hyperfine structure, a phantom and
+two blended Mn lines), and the abundance table's Fe rows sat ~0.33 dex above the
+fitted [Fe/H] (blend satellites fitted as separate lines). Both changed reported
+numbers silently; Mn, Cu and table Fe from 4.1.0 and earlier should not be used.
+Also: solver convergence diagnostics, a MAROON-X reader, and a working
+`species install-moog`.
+
+Minor rather than patch: abundances and their errors move.
+
+### Wrong numbers, no error raised
+
+- **Mn and Cu were overestimated (SPEC-2).** Their lines are hyperfine-split
+  but went through MOOG `abfind` as single lines. They now go through MOOG
+  `blends` with their HFS (and Cu isotopic) components from
+  `data/linelists/hfs_mn_cu.dat`. The patterns come from the Gaia-ESO line list
+  (Heiter et al. 2021), or from Kurucz for Mn I 5413.67, which Gaia-ESO lists
+  unsplit. The total log gf and the wavelength of each line are unchanged. Two
+  bad Mn lines were removed from `lines_ab.dat`. The first, 5255.380 (EP
+  5.52 eV, log gf −8.78), took the EW of Mn I 5255.33 and returned
+  A(Mn) ≈ 15.7. Sigma clipping hid it only when there were three or more lines.
+  The second, 5505.866, is dominated by Fe I 5505.88 and gave +1.1 dex in the
+  Sun. On the HARPS solar spectrum, at SPECIES' converged parameters, [Mn/H]
+  went from +0.42 to −0.03 and [Cu/H] from +0.32 to +0.00. Mn I 5537.75 was then removed as well: Ti I 5537.85, of comparable
+  strength, blends it, and it was the high outlier in the Sun and in a metal-rich
+  G dwarf (+0.9 dex). With two Mn lines sigma clipping cannot reject it. Mn now
+  rests on 5004.89, 5117.93, 5255.33, 5377.61 and 5413.67.
+
+- **The abundance table's Fe sat 0.2–0.4 dex above the fitted [Fe/H]**
+  (SPEC-4). On the HARPS Sun at the converged 5829/4.52/−0.00/0.70 it read
+  Fe I +0.33, Fe II +0.34. Two causes. (1) `lines_ab.dat` carries
+  synthesis-style component lists: satellites such as Fe I 5543.974
+  (log gf −6.06) beside 5543.936 (−1.14), or Fe II entries at 10.4 eV. Each
+  entry was measured as a line of its own. The Gaussian fit found the same
+  feature for every one of them, MOOG returned +1 to +9 dex for the satellites,
+  and the single 1.5σ clip kept enough of them to lift the mean. Same-species
+  entries within 0.10 Å are now folded into one line: the strongest component
+  (log gf − θχ at the star's Teff) carries the EW, with an effective
+  log gf = log Σ gf·10^(−θΔχ). That is exact for a same-EP pair such as
+  Na I 5688.19/5688.21, and a negligible change when the rest are satellites.
+  It is applied to every element except the HFS lines. Fe I goes from 52
+  entries to 41 features and Fe II from 15 to 10; Ti I and Cr I lose their
+  satellites too. (2) The real Fe I lines of `lines_ab.dat` have log gf a median
+  0.13 dex below linelist.dat's solar-calibrated values for the same
+  transitions. The Fe I and Fe II rows therefore now come from the solver's
+  final abfind, on the lines and EWs [Fe/H] was fitted on
+  (`determine_abundances(..., fe_abfind=)`, passed by `Analyzer`). The
+  abundance-list Fe lines remain only as a fallback. Results: on the Sun,
+  Fe I +0.000 ± 0.005 (101 lines) and Fe II −0.015 ± 0.013. On a MAROON-X epoch
+  fitted at [Fe/H] = 0.184 ± 0.050, Fe I +0.187 and Fe II +0.168; it was
+  +0.387 and +0.576.
+
+- **Abundance uncertainties are the measured line scatter / √n** (SPEC-4).
+  They used to be a fixed 0.2/√n. The scatter is floored at 0.05 dex. With
+  fewer than three lines, where it cannot be estimated, the old 0.2 dex per
+  line is kept as the floor.
+
+### Fixed
+
+- **`species install-moog` produced a binary that only worked from
+  /moog17scat** (SPEC-5). MOOG opens `Barklem.dat`/`BarklemUV.dat` via a path
+  compiled in from `moogpath` in `Moog.f`/`Moogsilent.f` (`'/moog17scat'`).
+  The installer now rewrites it to the install directory before `make`
+  (prefixes over 58 characters are refused, the Fortran buffer is 60). No
+  `/moog17scat` symlink needed.
+
+### Added
+
+- **Solver convergence diagnostics** (SPEC-1). `AtmosphericParameters` and
+  `AnalysisResult.to_dict()` now carry `final_residuals` (EP slope, Fe I − Fe II,
+  [Fe/H] derived − input, RW slope), `n_iters` (MOOG evaluations), `hit_iter_cap`,
+  `last_moog_status` and `n_fe_lines_input`, for every solver. Unknown is None,
+  never 0.
+
+- **MAROON-X (Gemini-N) reader** (SPEC-3). `Spectrum.from_fits` (and so the CLI
+  and `Analyzer.batch`) routes `*.hd5` pandas stores to `Spectrum.from_maroonx`:
+  fiber 6, blue order 91 dropped, pixels masked by variance (not flux), edge
+  trimming, S/N from flux/sqrt(var), R = 85000. The DRS wavelengths are
+  **vacuum**; they are converted to air for the SPECIES line lists. The
+  instrument response is optional (`response=` or `MAROONX_RESPONSE`); without
+  it each order is flattened by a polynomial envelope. New extra:
+  `pip install astro-species[maroonx]` (pandas, PyTables).
+
 ## 4.1.0 — 2026-08-24
 
 Eight defects, all introduced by the v4 rewrite and none present in the

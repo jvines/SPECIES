@@ -46,6 +46,47 @@ class AtmosphericParameters:
     fe_ii_abundance: float = 0.0
     converged: bool = False
     method: str = "per_parameter"
+    # Solver diagnostics. None means "not known", never "zero": a stored 0 would
+    # claim zero iterations or zero lines.
+    #: (EP slope, Fe I - Fe II, [Fe/H]_derived - [Fe/H]_input, RW slope) from
+    #: the last MOOG call that returned a result. For per_parameter and broyden
+    #: that is the last accepted evaluation, which on a failed fit need not be
+    #: at the reported parameters.
+    final_residuals: tuple[float, float, float, float] | None = None
+    #: Number of MOOG abfind evaluations the solver spent.
+    n_iters: int | None = None
+    #: True when the solver stopped because it ran out of iterations rather
+    #: than converging or hitting a different failure (singular Jacobian,
+    #: repeated MOOG failures, ...).
+    hit_iter_cap: bool | None = None
+    #: Outcome of the last MOOG call: "ok", "failed_iterations" (MOOG printed
+    #: failed-iteration lines), "moog_error" (MOOG raised / no output) or
+    #: "grid_interpolation_failed" (no atmosphere model for those parameters).
+    last_moog_status: str | None = None
+    #: Fe lines written to the MOOG linelist (Fe I + Fe II) before fitting.
+    n_fe_lines_input: int | None = None
+
+
+MOOG_OK = "ok"
+MOOG_FAILED_ITERATIONS = "failed_iterations"
+MOOG_ERROR = "moog_error"
+MOOG_NO_MODEL = "grid_interpolation_failed"
+
+
+def _moog_status(result: "AbfindResult | None") -> str:
+    """Status string for a MOOG call that returned (or did not return) a result."""
+    if result is None:
+        return MOOG_ERROR
+    return MOOG_FAILED_ITERATIONS if result.n_failed > 0 else MOOG_OK
+
+
+def _residuals(result: "AbfindResult", feh: float, fe_solar: float) -> tuple[float, float, float, float]:
+    """(EP slope, Fe I - Fe II, ab - feh, RW slope), as the solver defines them."""
+    ab = result.fe_i_abundance - fe_solar
+    return (
+        float(result.ep_slope), float(result.fe_i_fe_ii_diff),
+        float(ab - feh), float(result.rw_slope),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +153,19 @@ class _ConvergenceState:
         self.change_prev = "metallicity"
         self.history: list[list[float]] = []
         self._last_result: AbfindResult | None = None  # Track latest MOOG result
+        # Diagnostics (see AtmosphericParameters)
+        self.n_moog_calls = 0
+        self.last_moog_status: str | None = None
+        self.final_residuals: tuple[float, float, float, float] | None = None
+
+    def diagnostics(self) -> dict:
+        """Diagnostic fields for AtmosphericParameters."""
+        return {
+            "final_residuals": self.final_residuals,
+            "n_iters": self.n_moog_calls,
+            "hit_iter_cap": self.n_it >= self.n_repeat or self.n_it_total >= 500_000,
+            "last_moog_status": self.last_moog_status,
+        }
 
     @property
     def values(self) -> tuple[float, float, float, float]:
@@ -156,6 +210,11 @@ class _ConvergenceState:
 
     def record_moog_output(self, ab: float, ep: float, dif: float, rw: float, n_failed: int) -> None:
         """Store the latest MOOG output."""
+        # Unmasked, for reporting: self.moog zeroes held entries below, and a
+        # zero there would read as a residual that was measured and is nil.
+        self.final_residuals = (
+            float(ep), float(dif), float(ab - self.params["metallicity"].value), float(rw),
+        )
         self.moog = [ab, ep, dif, rw]
         self.n_failed = n_failed
         # Zero out held parameters
@@ -345,6 +404,7 @@ class AtmosphereFitter:
                         fe_i_abundance=result.fe_i_abundance,
                         fe_ii_abundance=result.fe_ii_abundance,
                         converged=True, method="per_parameter",
+                        **state.diagnostics(),
                     )
 
                 if state.is_failed():
@@ -574,9 +634,12 @@ class AtmosphereFitter:
         )
         if not ok:
             state.n_break += 1
+            state.last_moog_status = MOOG_NO_MODEL
             return None
         try:
             result = session.run_abfind(read_mode=self.config.read_mode)
+            state.n_moog_calls += 1
+            state.last_moog_status = _moog_status(result)
             logger.debug(
                 "MOOG [%s]: feh=%.2f T=%.0f logg=%.2f vt=%.2f → ab=%.3f ep=%.3f dif=%.3f rw=%.3f",
                 state.change, feh, teff, logg, vt,
@@ -585,6 +648,8 @@ class AtmosphereFitter:
             )
             return result
         except MOOGError:
+            state.n_moog_calls += 1
+            state.last_moog_status = MOOG_ERROR
             state.n_break += 1
             return None
 
@@ -613,6 +678,7 @@ class AtmosphereFitter:
         return AtmosphericParameters(
             teff=teff, logg=logg, feh=feh, vt=vt,
             converged=False, method="per_parameter",
+            **state.diagnostics(),
         )
 
     # ------------------------------------------------------------------
@@ -668,6 +734,7 @@ class AtmosphereFitter:
         params = np.clip(params, self._BOUNDS[:, 0], self._BOUNDS[:, 1])
         n_calls = 0
         last_result: AbfindResult | None = None
+        diag: dict = {"status": None, "resid": None, "cap": False}
 
         # `hold` was accepted here and never used, while compute_errors DID
         # honour it -- so hold=["gravity"] returned a freely fitted log g
@@ -694,18 +761,23 @@ class AtmosphereFitter:
                     fe_solar=self.config.fe_solar,
                 )
                 if not ok:
+                    diag["status"] = MOOG_NO_MODEL
                     return np.array([1e10, 1e10, 1e10, 1e10]), None
                 try:
                     r = session.run_abfind(read_mode=self.config.read_mode)
                 except MOOGError:
+                    diag["status"] = MOOG_ERROR
                     return np.array([1e10, 1e10, 1e10, 1e10]), None
 
+                diag["status"] = _moog_status(r)
                 ab = r.fe_i_abundance - self.config.fe_solar
                 return np.array([r.ep_slope, r.fe_i_fe_ii_diff, ab - feh, r.rw_slope]), r
 
             # Initial evaluation
             f0, last_result = moog_func(params)
             n_calls += 1
+            if last_result is not None:
+                diag["resid"] = tuple(float(x) for x in f0)
             quadr = np.linalg.norm(f0[idx])
 
             # Convergence threshold: L2 norm of 4 residuals. Each residual
@@ -714,7 +786,7 @@ class AtmosphereFitter:
             convergence_tol = 5.0 * self.config.tolerance.ab
 
             if quadr < convergence_tol:
-                return self._broyden_result(params, last_result, True, n_calls, "broyden")
+                return self._broyden_result(params, last_result, True, n_calls, "broyden", diag)
 
             # Compute initial Jacobian via finite differences (4 extra calls)
             J = np.eye(4)
@@ -739,12 +811,14 @@ class AtmosphereFitter:
             # Main Broyden iteration loop
             stagnation = 0
             for iteration in range(1, 30):
+                diag["cap"] = iteration == 29
                 # Solve J @ delta = -f
                 try:
                     delta = np.zeros(4)
                     delta[idx] = -np.linalg.solve(J[np.ix_(idx, idx)], f0[idx])
                 except np.linalg.LinAlgError:
                     logger.warning("Singular Jacobian at iteration %d", iteration)
+                    diag["cap"] = False
                     break
 
                 # Trust region: clamp step size
@@ -762,6 +836,9 @@ class AtmosphereFitter:
 
                 if result_new is not None:
                     last_result = result_new
+                    # Residuals of the step actually taken, not of the
+                    # finite-difference probes that also call moog_func.
+                    diag["resid"] = tuple(float(x) for x in f_new)
 
                 new_quadr = np.linalg.norm(f_new[idx])
                 logger.info(
@@ -790,7 +867,7 @@ class AtmosphereFitter:
                         "Broyden converged in %d iterations (%d MOOG calls)",
                         iteration, n_calls,
                     )
-                    return self._broyden_result(params, last_result, True, n_calls, "broyden")
+                    return self._broyden_result(params, last_result, True, n_calls, "broyden", diag)
 
                 # Stagnation detection
                 if abs(prev_quadr - quadr) < 1e-7:
@@ -810,7 +887,7 @@ class AtmosphereFitter:
                     stagnation = 0
 
         logger.warning("Broyden did not converge after %d calls", n_calls)
-        return self._broyden_result(params, last_result, False, n_calls, "broyden")
+        return self._broyden_result(params, last_result, False, n_calls, "broyden", diag)
 
     def _broyden_result(
         self,
@@ -819,6 +896,7 @@ class AtmosphereFitter:
         converged: bool,
         n_calls: int,
         method: str,
+        diag: dict | None = None,
     ) -> AtmosphericParameters:
         teff, logg, feh, vt = params
         return AtmosphericParameters(
@@ -832,6 +910,10 @@ class AtmosphereFitter:
             fe_ii_abundance=result.fe_ii_abundance if result else 0.0,
             converged=converged,
             method=method,
+            final_residuals=diag["resid"] if diag else None,
+            n_iters=n_calls,
+            hit_iter_cap=(not converged and diag["cap"]) if diag else None,
+            last_moog_status=diag["status"] if diag else None,
         )
 
     # ------------------------------------------------------------------
@@ -876,6 +958,7 @@ class AtmosphereFitter:
                 result = self._run_moog(teff, logg, feh, vt, linelist_path)
                 if result is None:
                     return None, feh
+                self._simplex_diag["resid"] = _residuals(result, feh, self.config.fe_solar)
                 ab = result.fe_i_abundance - self.config.fe_solar
                 if abs(ab - feh) <= self.config.tolerance.ab:
                     return result, feh
@@ -886,6 +969,7 @@ class AtmosphereFitter:
         # previous fixed point rather than from feh0; the simplex takes small
         # steps, so this converges in one or two MOOG calls after the first.
         feh_state = {"value": feh0}
+        self._simplex_diag = {"n": 0, "status": None, "resid": None}
 
         def objective(x: np.ndarray) -> float:
             teff, logg, vt = x
@@ -918,6 +1002,10 @@ class AtmosphereFitter:
             fe_i_abundance=result.fe_i_abundance if result else 0,
             fe_ii_abundance=result.fe_ii_abundance if result else 0,
             converged=res.success, method="downhill_simplex",
+            final_residuals=self._simplex_diag["resid"],
+            n_iters=self._simplex_diag["n"],
+            hit_iter_cap=(not res.success and res.nit >= 10000),
+            last_moog_status=self._simplex_diag["status"],
         )
 
     # ------------------------------------------------------------------
@@ -936,6 +1024,7 @@ class AtmosphereFitter:
 
         Returns None if the atmosphere model can't be interpolated or MOOG fails.
         """
+        diag = getattr(self, "_simplex_diag", None)
         try:
             with tempfile.TemporaryDirectory(prefix="species_atm_") as tmpdir:
                 model_path = Path(tmpdir) / "model.atm"
@@ -944,13 +1033,22 @@ class AtmosphereFitter:
                 )
                 if not ok:
                     logger.debug("Grid interpolation failed for T=%.0f logg=%.2f feh=%.2f", teff, logg, feh)
+                    if diag is not None:
+                        diag["status"] = MOOG_NO_MODEL
                     return None
 
-                return self.moog.run_abfind(
+                result = self.moog.run_abfind(
                     model_path, linelist_path, read_mode=self.config.read_mode,
                 )
+                if diag is not None:
+                    diag["n"] += 1
+                    diag["status"] = _moog_status(result)
+                return result
         except MOOGError as e:
             logger.debug("MOOG error: %s", e)
+            if diag is not None:
+                diag["n"] += 1
+                diag["status"] = MOOG_ERROR
             return None
 
 

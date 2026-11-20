@@ -31,6 +31,6 @@ RUN python -m pip install --upgrade pip \
         "uncertainties>=3.1" "PyAstronomy>=0.21" \
         "astroquery>=0.4.7" "click>=8.1" \
         "pytest>=8.0" "pytest-cov" "ruff" \
-        "netCDF4>=1.6"
+        "netCDF4>=1.6" "pandas>=2.0" "tables>=3.9"
 
 CMD ["bash"]

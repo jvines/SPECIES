@@ -205,6 +205,8 @@ class Analyzer:
             boundaries=boundaries,
         )
 
+        params.n_fe_lines_input = n_fe_i + n_fe_ii
+
         logger.info(
             "Parameters: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f (converged=%s)",
             params.teff, params.logg, params.feh, params.vt, params.converged,
@@ -232,7 +234,7 @@ class Analyzer:
             snr_scalar = float(spec_1d.snr) if not hasattr(spec_1d.snr, "__len__") else float(np.median(spec_1d.snr))
             raw_ab = determine_abundances(
                 params, spec_1d.wavelength, spec_1d.flux, snr_scalar,
-                self.config, self.moog, self.grid,
+                self.config, self.moog, self.grid, fe_abfind=abfind,
             )
             abundances = {
                 name: ElementAbundanceResult(
