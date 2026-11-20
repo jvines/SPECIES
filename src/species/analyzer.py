@@ -205,6 +205,8 @@ class Analyzer:
             boundaries=boundaries,
         )
 
+        params.n_fe_lines_input = n_fe_i + n_fe_ii
+
         logger.info(
             "Parameters: T=%.0f logg=%.2f [Fe/H]=%.2f vt=%.2f (converged=%s)",
             params.teff, params.logg, params.feh, params.vt, params.converged,
