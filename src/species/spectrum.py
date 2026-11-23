@@ -115,6 +115,7 @@ class Spectrum:
         instrument: str | None = None,
         star_name: str | None = None,
         response: str | Path | None = None,
+        blaze: str | Path | None = None,
     ) -> Spectrum:
         """Load a spectrum from a FITS file (or a MAROON-X pandas HDF store).
 
@@ -133,10 +134,13 @@ class Spectrum:
             MAROON-X only: path to the instrument response file. Falls back to
             the ``MAROONX_RESPONSE`` environment variable, then to per-order
             continuum flattening.
+        blaze
+            MAROON-X only: path to a masterflat blaze store
+            (``*_masterflat_*_blaze.hd5``). Falls back to ``MAROONX_BLAZE``.
         """
         path = Path(path)
         if path.suffix.lower() in _HDF_SUFFIXES:
-            return cls.from_maroonx(path, star_name=star_name, response=response)
+            return cls.from_maroonx(path, star_name=star_name, response=response, blaze=blaze)
         if star_name is None:
             star_name = path.stem
 
@@ -173,6 +177,7 @@ class Spectrum:
         fiber: int = 6,
         response: str | Path | None = None,
         medium: str = "air",
+        blaze: str | Path | None = None,
     ) -> Spectrum:
         """Load a MAROON-X reduced spectrum (``*.hd5``, pandas HDFStore).
 
@@ -187,13 +192,20 @@ class Spectrum:
             Instrument response file. If ``None``, ``MAROONX_RESPONSE`` is
             used; if that is unset too, each order is flattened by an
             iterative polynomial envelope instead.
+        blaze
+            Masterflat blaze store from the MAROON-X DRS
+            (``*_masterflat_*_blaze.hd5``: ``blaze_blue``/``blaze_red``, column
+            ``blaze``, index [Fiber, Order]). If ``None``, ``MAROONX_BLAZE`` is
+            used. Each order is divided by the blaze of the same fiber, then
+            the smooth remainder (flat-lamp and stellar SED) is flattened by
+            the polynomial envelope. Ignored when a response is applied.
         medium
             The DRS wavelengths are vacuum; SPECIES line lists are air, so the
             default converts to air. Pass ``"vacuum"`` to keep them as is.
         """
         path = Path(path)
         wave, flux, snr, header, target = _read_maroonx(
-            path, fiber=fiber, response=response, medium=medium
+            path, fiber=fiber, response=response, medium=medium, blaze=blaze
         )
         if star_name is None:
             star_name = target.replace(" ", "_") if target else path.stem
@@ -738,6 +750,29 @@ def _load_maroonx_response(path: str | Path | None) -> tuple[dict, dict] | None:
     return blue, red
 
 
+def _load_maroonx_blaze(path: str | Path | None, fiber: int) -> tuple[dict, dict] | None:
+    """Return ``(blaze_blue, blaze_red)`` dicts order -> array for ``fiber``, or None."""
+    import os
+
+    import pandas as pd
+
+    path = path or os.environ.get("MAROONX_BLAZE") or None
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"MAROON-X blaze file not found: {path}")
+    out = []
+    with pd.HDFStore(path, "r") as store:
+        for arm in ("blue", "red"):
+            col = store[f"blaze_{arm}"]["blaze"]
+            out.append({int(o): np.asarray(col[(f, o)], dtype=float)
+                        for f, o in col.index if int(f) == fiber})
+    if not out[0] and not out[1]:
+        raise ValueError(f"No fiber {fiber} in MAROON-X blaze file {path}")
+    return out[0], out[1]
+
+
 def _hdr_float(header, key: str) -> float | None:
     try:
         return float(header[key])
@@ -750,6 +785,7 @@ def _read_maroonx(
     fiber: int = 6,
     response: str | Path | None = None,
     medium: str = "air",
+    blaze: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict, str]:
     """Read a MAROON-X reduced spectrum (pandas HDFStore).
 
@@ -767,6 +803,8 @@ def _read_maroonx(
         raise ValueError("medium must be 'air' or 'vacuum'")
 
     resp = _load_maroonx_response(response)
+    blz = None if resp is not None else _load_maroonx_blaze(blaze, fiber)
+    n_blaze = 0
 
     with pd.HDFStore(path, "r") as store:
         spec = {"blue": store["spec_blue"], "red": store["spec_red"]}
@@ -806,6 +844,15 @@ def _read_maroonx(
                 else:
                     logger.warning("No usable response for %s order %d; flattening it", arm, order)
                     f = f / _flatten_order(f, good)
+            elif blz is not None:
+                b = blz[0 if arm == "blue" else 1].get(order)
+                if b is not None and b.size == f.size:
+                    good &= np.isfinite(b) & (b > 0.05 * np.nanmax(b))
+                    f = np.where(good, f / np.where(good, b, 1.0), np.nan)
+                    n_blaze += 1
+                else:
+                    logger.warning("No usable blaze for %s order %d; flattening it", arm, order)
+                f = f / _flatten_order(f, good)
             else:
                 f = f / _flatten_order(f, good)
             f = np.where(good, f, np.nan)
@@ -828,6 +875,8 @@ def _read_maroonx(
     hb = hdr["blue"]
     berv_raw = _hdr_float(hb, "BERV_FLUXWEIGHTED_FRD")
     target = str(hb.get("MAROONX TELESCOPE TARGETNAME", "")).strip() if hasattr(hb, "get") else ""
+    # SIMBAD-style names carry a leading "* " (e.g. "* tau Cet")
+    target = target.removeprefix("*").strip()
     header = {
         "INSTRUME": "MAROON-X",
         "OBJECT": target,
@@ -843,6 +892,8 @@ def _read_maroonx(
         "WAVELENGTH_MEDIUM": medium,
         "WAVELENGTH_SOURCE": "vacuum (DRS), converted" if medium == "air" else "vacuum (DRS)",
         "RESPONSE_APPLIED": resp is not None,
+        "BLAZE_APPLIED": n_blaze > 0,
+        "N_ORDERS_DEBLAZED": n_blaze,
         "N_ORDERS": len(rows),
     }
     return wave, flux, snr, header, target
