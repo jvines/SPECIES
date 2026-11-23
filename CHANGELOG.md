@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **MAROON-X masterflat blaze** (SPEC-6). `Spectrum.from_maroonx(..., blaze=)`
+  (or `MAROONX_BLAZE`, also through `from_fits` and the CLI) divides each order
+  by the DRS masterflat blaze of the same fiber (`*_masterflat_*_blaze.hd5`,
+  `blaze_blue`/`blaze_red`) before the polynomial envelope flattens what is
+  left. On the public tau Cet sample the continuum ripple drops from 0.47% to
+  0.11% (median per order). A response file, when given, still takes
+  precedence. Header gains `BLAZE_APPLIED` and `N_ORDERS_DEBLAZED`.
+- Real-file tests on the public MAROON-X DRS sample (tau Cet, EPRV data-standard
+  tutorial), run when `MAROONX_SAMPLE` / `MAROONX_SAMPLE_BLAZE` point at the
+  downloaded files.
+
+### Fixed
+
+- MAROON-X target names in SIMBAD form (`* tau Cet`) no longer become star
+  names starting with `*_`.
+
 ## 4.2.0 — 2026-11-20
 
 Abundances: Mn and Cu were overestimated (no hyperfine structure, a phantom and
