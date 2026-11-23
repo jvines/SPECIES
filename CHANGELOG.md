@@ -17,6 +17,12 @@
 
 ### Fixed
 
+- **`species analyze` crashed after the analysis and wrote no results file**
+  (SPEC-7, since 4.2.0). `final_residuals` went into the results table as a
+  4-vector column, which the fixed-width writer rejects. The table now carries
+  it as `resid_ep_slope`, `resid_fe1_fe2`, `resid_feh_in_out`, `resid_rw_slope`,
+  and unknown diagnostics are NaN (or "" for text) instead of object columns,
+  so the FITS writer works too. `to_dict()` is unchanged.
 - MAROON-X target names in SIMBAD form (`* tau Cet`) no longer become star
   names starting with `*_`.
 

@@ -18,6 +18,11 @@ from species.errors import ParameterErrors
 from species.ew import EWResult
 from species.moog import AbfindResult
 
+# Column names for AtmosphericParameters.final_residuals in tabular output.
+_RESIDUAL_COLUMNS = ("resid_ep_slope", "resid_fe1_fe2", "resid_feh_in_out", "resid_rw_slope")
+# Keys whose unknown value is written as "" rather than NaN.
+_STRING_COLUMNS = frozenset({"star_name", "method", "instrument", "last_moog_status"})
+
 
 @dataclass
 class BroadeningLineData:
@@ -134,8 +139,17 @@ class AnalysisResult:
         """Return as an astropy Table (single row)."""
         from astropy.table import Table
         d = self.to_dict()
-        # Wrap scalar values in lists for Table constructor
-        return Table({k: [v] for k, v in d.items()})
+        # One scalar, typed column per key: the fixed-width and FITS writers
+        # reject vector columns and object (None-holding) columns.
+        res = d.pop("final_residuals", None)
+        for i, name in enumerate(_RESIDUAL_COLUMNS):
+            d[name] = float(res[i]) if res is not None else None
+        cols = {}
+        for k, v in d.items():
+            if v is None:
+                v = "" if k in _STRING_COLUMNS else np.nan
+            cols[k] = [v]
+        return Table(cols)
 
     def to_ascii(self, path: Path) -> Path:
         """Write ASCII summary file."""
