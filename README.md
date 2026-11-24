@@ -137,7 +137,10 @@ SPECIES reads spectra from:
 
 - **HARPS** (ESO 3.6m)
 - **FEROS** (ESO/MPG 2.2m)
-- **MAROON-X** (Gemini-N, `*.hd5`; needs the `maroonx` extra)
+- **MAROON-X** (Gemini-N, `*.hd5`; needs the `maroonx` extra). Blaze: pass the
+  DRS response file (`response=` / `MAROONX_RESPONSE`) or a masterflat blaze
+  store (`blaze=` / `MAROONX_BLAZE`); without either, orders are flattened by
+  a polynomial envelope.
 - **UVES** (ESO VLT)
 - **HIRES** (Keck)
 - **CORALIE** (Euler 1.2m)

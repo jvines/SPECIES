@@ -1,5 +1,35 @@
 # Changelog
 
+## 4.3.0 — 2026-11-24
+
+MAROON-X spectra can be divided by the DRS masterflat blaze, and `species
+analyze` writes its results again (it crashed at the end since 4.2.0).
+Numbers from a run that finished are unchanged.
+
+### Added
+
+- **MAROON-X masterflat blaze** (SPEC-6). `Spectrum.from_maroonx(..., blaze=)`
+  (or `MAROONX_BLAZE`, also through `from_fits` and the CLI) divides each order
+  by the DRS masterflat blaze of the same fiber (`*_masterflat_*_blaze.hd5`,
+  `blaze_blue`/`blaze_red`) before the polynomial envelope flattens what is
+  left. On the public tau Cet sample the continuum ripple drops from 0.47% to
+  0.11% (median per order). A response file, when given, still takes
+  precedence. Header gains `BLAZE_APPLIED` and `N_ORDERS_DEBLAZED`.
+- Real-file tests on the public MAROON-X DRS sample (tau Cet, EPRV data-standard
+  tutorial), run when `MAROONX_SAMPLE` / `MAROONX_SAMPLE_BLAZE` point at the
+  downloaded files.
+
+### Fixed
+
+- **`species analyze` crashed after the analysis and wrote no results file**
+  (SPEC-7, since 4.2.0). `final_residuals` went into the results table as a
+  4-vector column, which the fixed-width writer rejects. The table now carries
+  it as `resid_ep_slope`, `resid_fe1_fe2`, `resid_feh_in_out`, `resid_rw_slope`,
+  and unknown diagnostics are NaN (or "" for text) instead of object columns,
+  so the FITS writer works too. `to_dict()` is unchanged.
+- MAROON-X target names in SIMBAD form (`* tau Cet`) no longer become star
+  names starting with `*_`.
+
 ## 4.2.0 — 2026-11-20
 
 Abundances: Mn and Cu were overestimated (no hyperfine structure, a phantom and
