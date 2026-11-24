@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 4.3.0 — 2026-11-24
+
+MAROON-X spectra can be divided by the DRS masterflat blaze, and `species
+analyze` writes its results again (it crashed at the end since 4.2.0).
+Numbers from a run that finished are unchanged.
 
 ### Added
 
