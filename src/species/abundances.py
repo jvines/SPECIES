@@ -58,6 +58,10 @@ class ElementAbundance:
     uncertainty: float
     n_lines: int
     solar_reference: float  # A(X)_sun from Asplund 2009
+    # Per-line MOOG abfind rows at the final atmosphere:
+    # (wavelength, species_id, ep, loggf, ew_mA, abundance A(X), ew_err_mA). Empty for ions
+    # that went through MOOG blends (hyperfine structure).
+    lines: tuple = ()
 
 
 def determine_abundances(
@@ -111,6 +115,8 @@ def determine_abundances(
     if not valid_ew:
         logger.warning("No valid EWs measured for abundance lines")
         return {}
+    ew_err = {round(float(r.wavelength), 2): float(max(r.ew_err_plus, r.ew_err_minus))
+              for r in valid_ew}
 
     # 2. Create MOOG-format linelists: abfind for single lines, blends for
     #    lines with hyperfine structure
@@ -146,6 +152,7 @@ def determine_abundances(
                 return {}
 
             raw_abundances = _parse_multi_species(summary_path, config.fe_solar)
+            line_rows = parse_abfind_line_rows(summary_path)
 
             # Hyperfine-split lines: one MOOG blends run per element, at the
             # same model. These replace any abfind result for the ion.
@@ -153,6 +160,7 @@ def determine_abundances(
                 summary = _summarise(per_line)
                 if summary is not None:
                     raw_abundances[ion_name] = summary
+                    line_rows.pop(ion_name, None)
 
     except MOOGError as e:
         logger.warning("MOOG failed for abundance determination: %s", e)
@@ -161,6 +169,10 @@ def determine_abundances(
     # Fe on the solver's own lines and EWs
     if fe_abfind is not None:
         for ion_name in ("FeI", "FeII"):
+            line_rows[ion_name] = [
+                (lr.wavelength, lr.species_id, lr.ep, lr.loggf, lr.ew_obs, lr.abundance)
+                for lr in fe_abfind.lines.get(ion_name, [])
+            ]
             summary = _summarise([lr.abundance for lr in fe_abfind.lines.get(ion_name, [])])
             if summary is not None:
                 raw_abundances[ion_name] = summary
@@ -180,6 +192,8 @@ def determine_abundances(
             uncertainty=float(std_ab),
             n_lines=n_lines,
             solar_reference=solar,
+            lines=tuple(row + (ew_err.get(round(row[0], 2), np.nan),)
+                        for row in line_rows.get(ion_name, ())),
         )
 
     logger.info("Determined abundances for %d ions", len(abundances))
@@ -244,6 +258,33 @@ def _parse_multi_species(
             results[species] = summary
 
     return results
+
+
+def parse_abfind_line_rows(output_path: Path) -> dict[str, list[tuple]]:
+    """Per-line rows of a MOOG abfind summary, for every species.
+
+    Returns ion name (e.g. ``"NaI"``) -> list of
+    ``(wavelength, species_id, ep, loggf, ew_mA, abundance)``. Failed lines are
+    skipped, as in :func:`_parse_multi_species`; unlike it, no outlier cut is
+    applied, so the rows are exactly what MOOG returned.
+    """
+    rows: dict[str, list[tuple]] = {}
+    current: str | None = None
+    with open(output_path) as f:
+        for line in f:
+            line = line.strip()
+            if _RE_FAILED.search(line):
+                continue
+            m = _RE_SPECIES.search(line)
+            if m:
+                current = m.group(1).strip().replace(" ", "")
+                rows.setdefault(current, [])
+                continue
+            if current and not _RE_HAS_ALPHA.search(line) and _RE_LINE_DATA.search(line):
+                cols = line.split()
+                if len(cols) >= 7:
+                    rows[current].append(tuple(float(c) for c in cols[:5]) + (float(cols[6]),))
+    return rows
 
 
 def _summarise(ab_list: list[float]) -> tuple[float, float, int] | None:
