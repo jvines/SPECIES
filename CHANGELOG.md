@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Per-line table** (SPEC-8). Results now keep every measured line:
+  wavelength, MOOG species code, excitation potential, log gf, EW, sigma_EW and
+  the MOOG abfind abundance at the final atmosphere (NaN for a line that did not
+  enter MOOG), with a `used` flag. `AnalysisResult.lines` / `line_records()`,
+  a `LINES` HDU in `to_fits`, and a `<stem>_lines.dat` sidecar in `to_ascii`.
+  Before, only the summary row was written and the EWs were lost. On the bundled
+  solar HARPS spectrum: 270 lines, 230 with abfind abundances.
+
 ## 4.3.0 — 2026-11-24
 
 MAROON-X spectra can be divided by the DRS masterflat blaze, and `species

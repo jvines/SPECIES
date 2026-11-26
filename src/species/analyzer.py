@@ -32,6 +32,8 @@ from species.io.results import (
     AnalysisResult,
     BroadeningResult,
     ElementAbundanceResult,
+    LineRecord,
+    build_line_records,
 )
 from species.moog.atmosphere_grid import AtmosphereGrid
 from species.moog.wrapper import MOOGRunner
@@ -228,6 +230,7 @@ class Analyzer:
 
         # 6. Chemical abundances
         abundances: dict[str, ElementAbundanceResult] = {}
+        raw_ab_lines: list[tuple] = []
         if self.config.compute_abundances and params.converged:
             logger.info("Determining chemical abundances")
             from species.abundances import determine_abundances
@@ -243,6 +246,8 @@ class Analyzer:
                 )
                 for name, ab in raw_ab.items()
             }
+            raw_ab_lines = [row for name, ab in raw_ab.items()
+                            if name not in ("FeI", "FeII") for row in ab.lines]
 
         # 7. Broadening (vsini, vmac)
         broadening: BroadeningResult | None = None
@@ -290,7 +295,25 @@ class Analyzer:
             ew_results=ew_results,
             abfind=abfind,
             metadata=metadata,
+            lines=self._line_records(ew_results, abfind, raw_ab_lines),
         )
+
+    def _line_records(self, ew_results, abfind, other_rows):
+        """Per-line table: every Fe line with a measured EW (with its abfind
+        abundance at the final atmosphere when it entered MOOG), then every
+        other-element line MOOG abfind returned."""
+        if not ew_results:
+            return []
+        fe_rows = []
+        if abfind is not None:
+            fe_rows = [(lr.wavelength, lr.species_id, lr.ep, lr.loggf, lr.ew_obs, lr.abundance)
+                       for key in ("FeI", "FeII") for lr in abfind.lines.get(key, [])]
+        records = build_line_records(ew_results, [LineList.from_file(self.config.linelist_path)],
+                                     fe_rows)
+        for w, sp, ep, gf, ew, ab, ew_err in other_rows:
+            records.append(LineRecord(float(w), float(sp), float(ep), float(gf), float(ew),
+                                      float(ew_err), float(ab), True))
+        return records
 
     # ------------------------------------------------------------------
     # Convenience methods
