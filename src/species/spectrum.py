@@ -604,10 +604,50 @@ def _read_feros(
     return wave, flux, snr, _header_to_dict(header0)
 
 
+def _is_phase3_table(hdu_list: fits.HDUList) -> bool:
+    """ESO Phase 3 1D spectrum: empty primary, binary table with WAVE + FLUX."""
+    if hdu_list[0].data is not None or len(hdu_list) < 2:
+        return False
+    cols = getattr(hdu_list[1], "columns", None)
+    names = {c.upper() for c in cols.names} if cols is not None else set()
+    return "WAVE" in names and ("FLUX" in names or "FLUX_REDUCED" in names)
+
+
+def _read_phase3_table(
+    hdu_list: fits.HDUList, header0: fits.Header, path: Path
+) -> tuple[np.ndarray, np.ndarray, float | np.ndarray | None, dict]:
+    """ESO Phase 3 1D spectrum (UVES, ESPRESSO, X-shooter, ... science data
+    products): one-row binary table, wavelengths in nm or Angstrom.
+
+    The pipeline-reduced flux (``FLUX_REDUCED``, not flux calibrated) is used
+    when present, as SPECIES normalises the continuum itself; otherwise
+    ``FLUX``. Pixels flagged in ``QUAL``/``QUAL_REDUCED``, non-finite or
+    non-positive are dropped. S/N from the ``SNR`` keyword."""
+    tab = hdu_list[1]
+    names = {c.upper(): c for c in tab.columns.names}
+    use = "FLUX_REDUCED" if "FLUX_REDUCED" in names else "FLUX"
+    wave = np.asarray(tab.data[names["WAVE"]][0], float)
+    flux = np.asarray(tab.data[names[use]][0], float)
+    if use == "FLUX_REDUCED" and not np.any(flux > 0) and "FLUX" in names:
+        use = "FLUX"
+        flux = np.asarray(tab.data[names["FLUX"]][0], float)
+    qual_col = "QUAL_REDUCED" if use == "FLUX_REDUCED" else "QUAL"
+    good = np.isfinite(wave) & np.isfinite(flux) & (flux > 0)
+    if qual_col in names:
+        good &= np.asarray(tab.data[names[qual_col]][0]) == 0
+    unit = str(tab.header.get(f"TUNIT{tab.columns.names.index(names['WAVE']) + 1}", "")).lower()
+    if unit.startswith("nm") or (not unit.startswith("ang") and np.nanmedian(wave) < 2000):
+        wave = wave * 10.0
+    snr = header0.get("SNR")
+    return wave[good], flux[good], (float(snr) if snr else None), _header_to_dict(header0)
+
+
 def _read_generic(
     hdu_list: fits.HDUList, header0: fits.Header, path: Path
 ) -> tuple[np.ndarray, np.ndarray, float | np.ndarray | None, dict]:
     """Generic FITS reader for unsupported instruments."""
+    if _is_phase3_table(hdu_list):
+        return _read_phase3_table(hdu_list, header0, path)
     snr = header0.get("SNR")
     wave, flux = None, None
 
@@ -642,9 +682,10 @@ def _read_generic(
 def _read_uves(
     hdu_list: fits.HDUList, header0: fits.Header, path: Path
 ) -> tuple[np.ndarray, np.ndarray, float | np.ndarray | None, dict]:
-    """Read UVES FITS files. Handles blue+red arm combination."""
-    # UVES can come as separate blue/red or combined
-    # The combined case is handled by the generic reader
+    """Read UVES FITS files: ESO Phase 3 science data products (the archive's
+    standard 1D UVES product), else a WCS or array 1D spectrum."""
+    if _is_phase3_table(hdu_list):
+        return _read_phase3_table(hdu_list, header0, path)
     return _read_generic(hdu_list, header0, path)
 
 

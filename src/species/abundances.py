@@ -73,6 +73,9 @@ def determine_abundances(
     moog: MOOGRunner,
     grid: AtmosphereGrid,
     fe_abfind: AbfindResult | None = None,
+    resolution: float = 0.0,
+    vsini: float = 0.0,
+    vmac: float = 0.0,
 ) -> dict[str, ElementAbundance]:
     """Determine chemical abundances from a multi-element line list.
 
@@ -96,6 +99,11 @@ def determine_abundances(
         solar-calibrated log gf -- rather than from the Fe lines of the
         abundance list, whose log gf sit a median 0.13 dex below linelist.dat's
         for the same transitions and put the table's Fe above the fitted [Fe/H].
+    resolution, vsini, vmac
+        Passed to the EW measurement for the line-width acceptance bound, as
+        for the iron lines. Before, the abundance lines always got the fixed
+        0.10 A bound, so a rotator kept its Fe lines (when vsini was given) but
+        lost nearly every other element.
 
     Returns
     -------
@@ -110,6 +118,7 @@ def determine_abundances(
     logger.info("Measuring EWs for abundance linelist")
     ew_results = measure_equivalent_widths(
         wavelength, flux, snr, config.linelist_ab_path,
+        resolution=resolution, vsini=vsini, vmac=vmac,
     )
     valid_ew = [r for r in ew_results if r.is_valid]
     if not valid_ew:
