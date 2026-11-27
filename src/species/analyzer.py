@@ -238,6 +238,9 @@ class Analyzer:
             raw_ab = determine_abundances(
                 params, spec_1d.wavelength, spec_1d.flux, snr_scalar,
                 self.config, self.moog, self.grid, fe_abfind=abfind,
+                resolution=self.spectrum.resolving_power,
+                vsini=self._overrides.get("vsini", 0.0),
+                vmac=self._overrides.get("vmac", 0.0),
             )
             abundances = {
                 name: ElementAbundanceResult(

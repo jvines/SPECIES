@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **Abundance lines get the line-width bound of the iron lines.** The
+  abundance-list EW pass was called without resolution, vsini or vmac, so its
+  width gate was always the fixed 0.10 A: a rotator analysed with a known vsini
+  kept its Fe lines but lost almost every other element (HD 206860, vsini
+  ~10.6 km/s: 2 Cr, 2 Ni, no Na/Mg/Si/Ca/Ti), and at R = 42-48k slow rotators
+  lost abundance lines near the instrumental width. `determine_abundances` now
+  takes and forwards `resolution`, `vsini`, `vmac`, and the analyzer passes them.
+
 - **ESO Phase 3 1D spectra are read.** UVES science data products from the
   ESO archive (empty primary + one-row `SPECTRUM` table with `WAVE`, `FLUX`,
   `FLUX_REDUCED`, `QUAL`) failed with "unrecognized FITS format": the UVES
