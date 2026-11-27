@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **ESO Phase 3 1D spectra are read.** UVES science data products from the
+  ESO archive (empty primary + one-row `SPECTRUM` table with `WAVE`, `FLUX`,
+  `FLUX_REDUCED`, `QUAL`) failed with "unrecognized FITS format": the UVES
+  reader only handed off to the WCS/array generic reader. The pipeline-reduced
+  flux is used when present, flagged/non-finite pixels are dropped, nm are
+  converted to Angstrom, and S/N comes from the `SNR` keyword. The generic
+  reader takes the same path, so other Phase 3 products load too.
+
 ## 4.4.0 — 2026-11-26
 
 ### Added
